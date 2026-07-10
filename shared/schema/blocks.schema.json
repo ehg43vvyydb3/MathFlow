@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathflow.local/schema/blocks.schema.json",
+  "title": "MathFlow blocks.json",
+  "description": "블록 하나하나의 위치(bbox)·종류(type)·리플로우 힌트·(선택) 이미지 캐시·OCR 결과.",
+  "type": "object",
+  "required": ["schema_version", "book_id", "blocks"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "스키마 버전 (semver). 현재 1.0"
+    },
+    "book_id": {
+      "type": "string",
+      "description": "소속 book.id (참조 무결성 검증용)"
+    },
+    "blocks": {
+      "type": "array",
+      "description": "블록 배열. (page, order) 순 권장.",
+      "items": { "$ref": "#/$defs/block" }
+    }
+  },
+  "$defs": {
+    "block": {
+      "type": "object",
+      "required": ["id", "page", "type", "bbox"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "book 내 유일한 블록 id. 권장 패턴 p{page}_b{n}",
+          "examples": ["p7_b03"]
+        },
+        "page": {
+          "type": "integer",
+          "description": "이 블록이 속한 페이지 번호 (1-indexed, pages.number 참조)",
+          "minimum": 1
+        },
+        "type": {
+          "type": "string",
+          "description": "블록 종류",
+          "enum": ["text", "formula", "figure", "table", "problem_number"]
+        },
+        "bbox": {
+          "type": "array",
+          "description": "페이지 기준 정규화 좌표 [x, y, w, h] (좌상단 원점, 0~1)",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "order": {
+          "type": "integer",
+          "description": "(선택) 페이지 내 읽기/리플로우 순서. page.block_order가 있으면 그쪽이 우선.",
+          "minimum": 0
+        },
+        "confidence": {
+          "type": "number",
+          "description": "(선택) 블록 분류 신뢰도 0~1",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "problem_id": {
+          "type": "string",
+          "description": "(선택) 이 블록이 속한 문제 id (pages.problems[].id 참조)"
+        },
+        "reflow": {
+          "type": "object",
+          "description": "(선택) 스마트 리플로우 배치 힌트",
+          "additionalProperties": false,
+          "properties": {
+            "role": {
+              "type": "string",
+              "description": "리플로우에서의 역할",
+              "enum": ["paragraph", "equation", "figure", "table", "label"]
+            },
+            "full_width": {
+              "type": "boolean",
+              "description": "화면 폭을 꽉 채워 배치할지",
+              "default": false
+            },
+            "keep_aspect": {
+              "type": "boolean",
+              "description": "이미지 종횡비 유지 여부 (수식·그림은 true 권장)",
+              "default": true
+            },
+            "align": {
+              "type": "string",
+              "description": "가로 정렬",
+              "enum": ["left", "center", "right"],
+              "default": "left"
+            },
+            "break_before": {
+              "type": "boolean",
+              "description": "이 블록 앞에서 시각적 구분(여백/개행)을 줄지",
+              "default": false
+            }
+          }
+        },
+        "lines": {
+          "type": "array",
+          "description": "(선택) text 블록의 줄 단위 정보. 정밀 리플로우/줄 하이라이트용.",
+          "items": {
+            "type": "object",
+            "required": ["bbox"],
+            "additionalProperties": false,
+            "properties": {
+              "bbox": {
+                "type": "array",
+                "description": "줄 영역 [x, y, w, h] 정규화 좌표",
+                "items": { "type": "number", "minimum": 0, "maximum": 1 },
+                "minItems": 4,
+                "maxItems": 4
+              },
+              "text": {
+                "type": "string",
+                "description": "(선택) OCR 텍스트. 미실행이면 생략."
+              }
+            }
+          }
+        },
+        "image": {
+          "type": "string",
+          "description": "(선택) 블록 크롭 이미지 캐시 상대 경로. 없으면 서버가 bbox로 실시간 크롭.",
+          "examples": ["blocks/p7_b03.webp"]
+        },
+        "text": {
+          "type": "string",
+          "description": "(선택, 확장 예약) 블록 전체 OCR 텍스트. 미실행이면 생략."
+        },
+        "latex": {
+          "type": "string",
+          "description": "(선택, 확장 예약) formula 블록의 LaTeX 변환. AI 문제 풀이 연동용."
+        }
+      }
+    }
+  }
+}

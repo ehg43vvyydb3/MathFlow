@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathflow.local/schema/book.schema.json",
+  "title": "MathFlow book.json",
+  "description": "책 1권의 최상위 메타데이터 + 단원 목차 + 렌더링 기본값. 편집기가 생성, 서버가 서빙, 뷰어가 소비.",
+  "type": "object",
+  "required": ["schema_version", "id", "title", "page_count", "created_at"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "description": "스키마 버전 (semver). 현재 1.0",
+      "pattern": "^\\d+\\.\\d+$",
+      "examples": ["1.0"]
+    },
+    "id": {
+      "type": "string",
+      "description": "책 식별자 slug. 소문자·숫자·하이픈.",
+      "pattern": "^[a-z0-9][a-z0-9-]*$",
+      "examples": ["calculus-stewart-8e"]
+    },
+    "title": {
+      "type": "string",
+      "description": "책 제목",
+      "minLength": 1
+    },
+    "author": {
+      "type": "string",
+      "description": "(선택) 저자"
+    },
+    "subject": {
+      "type": "string",
+      "description": "(선택) 과목/분야",
+      "examples": ["수학", "미적분학"]
+    },
+    "source_filename": {
+      "type": "string",
+      "description": "(선택) 전처리 이전 원본 PDF 파일명"
+    },
+    "page_count": {
+      "type": "integer",
+      "description": "최종 book.pdf의 페이지 수",
+      "minimum": 0
+    },
+    "cover_page": {
+      "type": "integer",
+      "description": "(선택) 표지로 사용할 페이지 번호 (1-indexed)",
+      "minimum": 1
+    },
+    "created_at": {
+      "type": "string",
+      "description": "생성 시각 (ISO 8601 UTC)",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "description": "(선택) 마지막 수정 시각 (ISO 8601 UTC)",
+      "format": "date-time"
+    },
+    "rendering": {
+      "type": "object",
+      "description": "(선택) 렌더링 기본값. 서버가 페이지를 실시간 렌더링할 때의 기준.",
+      "additionalProperties": false,
+      "properties": {
+        "dpi": {
+          "type": "integer",
+          "description": "페이지 캐시 이미지를 만든 기준 DPI",
+          "minimum": 1,
+          "examples": [150, 200]
+        },
+        "default_width_px": {
+          "type": "integer",
+          "description": "페이지 렌더 이미지의 기본 가로 픽셀",
+          "minimum": 1,
+          "examples": [1080]
+        },
+        "image_format": {
+          "type": "string",
+          "description": "캐시 이미지 포맷",
+          "enum": ["webp", "png", "jpeg"]
+        }
+      }
+    },
+    "chapters": {
+      "type": "array",
+      "description": "(선택) 단원 목차. 페이지 범위로 트리를 구성.",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "start_page"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "book 내 유일한 단원 id",
+            "examples": ["ch03"]
+          },
+          "title": {
+            "type": "string",
+            "description": "단원 제목"
+          },
+          "start_page": {
+            "type": "integer",
+            "description": "시작 페이지 (1-indexed, 포함)",
+            "minimum": 1
+          },
+          "end_page": {
+            "type": "integer",
+            "description": "(선택) 끝 페이지 (1-indexed, 포함). 없으면 다음 단원 직전까지.",
+            "minimum": 1
+          },
+          "level": {
+            "type": "integer",
+            "description": "(선택) 목차 깊이. 0=대단원, 1=중단원 ...",
+            "minimum": 0,
+            "default": 0
+          },
+          "order": {
+            "type": "integer",
+            "description": "(선택) 같은 레벨 내 정렬 순서",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "tags": {
+      "type": "array",
+      "description": "(선택) 자유 태그",
+      "items": { "type": "string" }
+    }
+  }
+}

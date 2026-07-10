@@ -1,0 +1,20 @@
+.env
+*.env
+!.env.example
+
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.DS_Store
+
+editor/projects/
+system_context.txt
+.claude/
+
+# 저작권 있는 교재(개념원리 공통수학2 등)에서 뽑은 실제 페이지 이미지·블록
+# 좌표·메타데이터. 코드는 퍼블릭으로 공유해도, 특정 교재의 구조를 그대로
+# 담은 산출물은 올리지 않는다. shared/schema/examples/도 같은 책(21쪽)에서
+# 뽑은 좌표라 마찬가지로 제외한다.
+editor/output/
+shared/schema/examples/

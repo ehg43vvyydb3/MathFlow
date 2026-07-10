@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>MathFlow</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header class="topbar">
+  <button id="btn-menu" class="icon-btn" aria-label="목록">☰</button>
+  <div class="page-indicator" id="page-indicator">-</div>
+  <div class="topbar-actions">
+    <button id="btn-favorite" class="icon-btn" aria-label="즐겨찾기">☆</button>
+    <button id="btn-bookmark" class="icon-btn" aria-label="책갈피">🔖</button>
+  </div>
+</header>
+
+<div class="view-toggle">
+  <button id="mode-image" class="mode-btn">원본</button>
+  <button id="mode-reflow" class="mode-btn active">리플로우</button>
+</div>
+
+<main id="content">
+  <div id="page-view" class="page-view" hidden>
+    <img id="page-image" alt="" />
+    <p id="page-empty-hint" class="empty-hint" hidden>이 페이지는 아직 준비되지 않았습니다.</p>
+  </div>
+  <div id="reflow-view" class="reflow-view"></div>
+</main>
+
+<nav class="bottombar">
+  <button id="btn-prev" class="nav-btn">◀</button>
+  <input id="page-input" type="number" inputmode="numeric" />
+  <span id="page-total"></span>
+  <button id="btn-next" class="nav-btn">▶</button>
+</nav>
+
+<div id="drawer" class="drawer" hidden>
+  <div class="drawer-backdrop"></div>
+  <div class="drawer-panel">
+    <div class="drawer-header">
+      <button id="btn-close-drawer" class="icon-btn">✕</button>
+    </div>
+    <section>
+      <h3>단원</h3>
+      <select id="unit-select"></select>
+    </section>
+    <section>
+      <h3>즐겨찾기</h3>
+      <ul id="list-favorites" class="drawer-list"></ul>
+    </section>
+    <section>
+      <h3>책갈피</h3>
+      <ul id="list-bookmarks" class="drawer-list"></ul>
+    </section>
+    <section>
+      <h3>최근 페이지</h3>
+      <ul id="list-recent" class="drawer-list"></ul>
+    </section>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

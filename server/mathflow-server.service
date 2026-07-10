@@ -1,0 +1,16 @@
+# /etc/systemd/system/mathflow-server.service
+[Unit]
+Description=MathFlow 수학 PDF 학습 서버
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+WorkingDirectory=/home/user/apps/mathflow-server
+ExecStart=/home/user/apps/mathflow-server/venv/bin/python -m uvicorn main:app --host 0.0.0.0 --port 5020
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

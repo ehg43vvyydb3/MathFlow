@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mathflow.local/schema/pages.schema.json",
+  "title": "MathFlow pages.json",
+  "description": "페이지별 물리 정보(크기·회전·크롭·기울기 보정)와 그 페이지에 속한 블록/문제 목록. block_order가 리플로우 순서의 기준.",
+  "type": "object",
+  "required": ["schema_version", "book_id", "pages"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+$",
+      "description": "스키마 버전 (semver). 현재 1.0"
+    },
+    "book_id": {
+      "type": "string",
+      "description": "소속 book.id (참조 무결성 검증용)"
+    },
+    "pages": {
+      "type": "array",
+      "description": "페이지 배열. number 오름차순 권장.",
+      "items": { "$ref": "#/$defs/page" }
+    }
+  },
+  "$defs": {
+    "page": {
+      "type": "object",
+      "required": ["number", "width_px", "height_px"],
+      "additionalProperties": false,
+      "properties": {
+        "number": {
+          "type": "integer",
+          "description": "최종 book.pdf 기준 페이지 번호 (1-indexed)",
+          "minimum": 1
+        },
+        "source_number": {
+          "type": "integer",
+          "description": "(선택) 원본 PDF에서의 페이지 번호. 삭제·재배치가 있었을 때 추적용.",
+          "minimum": 1
+        },
+        "chapter_id": {
+          "type": "string",
+          "description": "(선택) 이 페이지가 속한 단원 id (book.chapters 참조)"
+        },
+        "width_px": {
+          "type": "integer",
+          "description": "렌더 이미지 가로 픽셀 (bbox 정규화 좌표를 픽셀로 환산할 때 기준)",
+          "minimum": 1
+        },
+        "height_px": {
+          "type": "integer",
+          "description": "렌더 이미지 세로 픽셀",
+          "minimum": 1
+        },
+        "rotation": {
+          "type": "integer",
+          "description": "(선택) 적용된 회전 각도. 90도 단위.",
+          "enum": [0, 90, 180, 270],
+          "default": 0
+        },
+        "deskew_angle": {
+          "type": "number",
+          "description": "(선택) 편집기가 적용한 기울기 보정 각도(도). 기록용.",
+          "examples": [0.0, -0.7]
+        },
+        "source_crop": {
+          "type": "array",
+          "description": "(선택) 원본 대비 적용한 크롭 영역 [x, y, w, h] 정규화 좌표. 기록/재현용.",
+          "items": { "type": "number", "minimum": 0, "maximum": 1 },
+          "minItems": 4,
+          "maxItems": 4
+        },
+        "block_order": {
+          "type": "array",
+          "description": "(선택) 스마트 리플로우 시 세로로 쌓을 블록 id 순서. 없으면 서버가 bbox y좌표로 정렬.",
+          "items": { "type": "string" }
+        },
+        "problems": {
+          "type": "array",
+          "description": "(선택) 이 페이지에서 인식된 문제 단위. '문제 단위 이동'과 오답노트 연동용.",
+          "items": {
+            "type": "object",
+            "required": ["id"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "book 내 유일한 문제 id",
+                "examples": ["p7_prob2"]
+              },
+              "label": {
+                "type": "string",
+                "description": "(선택) 화면에 보일 문제 번호 라벨",
+                "examples": ["12", "예제 3"]
+              },
+              "block_ids": {
+                "type": "array",
+                "description": "(선택) 이 문제를 구성하는 블록 id 목록",
+                "items": { "type": "string" }
+              },
+              "bbox": {
+                "type": "array",
+                "description": "(선택) 문제 전체를 감싸는 영역 [x, y, w, h] 정규화 좌표",
+                "items": { "type": "number", "minimum": 0, "maximum": 1 },
+                "minItems": 4,
+                "maxItems": 4
+              }
+            }
+          }
+        },
+        "thumbnail": {
+          "type": "string",
+          "description": "(선택) 썸네일 이미지 상대 경로",
+          "examples": ["thumbs/0007.webp"]
+        },
+        "image": {
+          "type": "string",
+          "description": "(선택) 페이지 렌더 이미지 캐시 상대 경로",
+          "examples": ["pages/0007.webp"]
+        }
+      }
+    }
+  }
+}
