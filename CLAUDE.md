@@ -82,6 +82,8 @@ python shared/schema/validate.py editor/output/<book_id>  # 실제 책 산출물
 python editor/prototypes/diff_edits.py                 # status.json에서 완료 표시된 페이지 전부
 python editor/prototypes/diff_edits.py --pages 10-24
 python editor/prototypes/diff_edits.py --force          # 캐시 무시하고 실제 VLM 호출 (느림)
+# 출력은 stdout에만 찍고 파일로 따로 안 남긴다 — 나중에 다시 보려면 리다이렉트로 직접 저장.
+python editor/prototypes/diff_edits.py --pages 10-32 > report.txt
 
 # 서버: 코드 변경사항을 파이에 배포 (data/는 제외 — 그건 편집기가 따로 rsync함)
 rsync -avz --exclude data server/ pi:~/apps/mathflow-server/

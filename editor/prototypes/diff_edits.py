@@ -15,6 +15,10 @@ ID로 매칭하면 가짜 타입변경/리사이즈 신호가 잔뜩 잡힌다 (
     python diff_edits.py --force                # 캐시 무시하고 VLM 재호출
                                                   # (프롬프트를 막 바꿔서 캐시가
                                                   # 낡았을 때만 쓰기 — 느림)
+
+리포트는 stdout에만 찍고 파일로 따로 저장하지 않는다 — 나중에 다시 보려면
+직접 리다이렉트할 것:
+    python diff_edits.py --pages 10-32 > report.txt
 """
 from __future__ import annotations
 

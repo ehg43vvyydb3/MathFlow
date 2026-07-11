@@ -258,11 +258,24 @@ BADGE_HUE_MAX = 125
 BADGE_SAT_MIN = 60
 BADGE_VAL_MIN = 40
 BADGE_VAL_MAX = 250
-BADGE_MIN_AREA_PX = 200  # 안티앨리어싱 경계 등 잡음 성분 제외
+BADGE_MIN_AREA_PX = 1000  # 안티앨리어싱 경계, 잡음, 소단원 스텝 번호(~650),
+# "개념원리 이해" 배너의 스우시 왼쪽 조각(닫힘 커널로도 안정적으로 안 합쳐짐,
+# 10·18쪽 실측 830~915)까지 제외 — 실제 배지 최소 조각은 1156 이상이라 여유 있음.
+BADGE_MAX_AREA_PX = 4000
 # 배지 옆 번호("29" 등)가 검정이 아니라 배지와 비슷한 짙은 남색 계열이라 색
 # 마스크에 따로 걸리는 경우가 있다(22쪽 실측) — 번호 성분은 높이가 22px인 데
 # 반해 실제 배지 원은 34~63px라 뚜렷이 낮으니, 높이로 번호 성분을 걸러낸다.
-BADGE_MIN_HEIGHT_PX = 25
+BADGE_MIN_HEIGHT_PX = 30
+BADGE_MAX_HEIGHT_PX = 70
+BADGE_MAX_WIDTH_PX = 90
+# 이 브랜드 색(청록~파랑)이 문제 배지 말고도 다른 UI 장식에 재사용돼서 실측중
+# 오탐 3종을 발견했다: (1) "개념원리 이해" 큰 섹션 헤더 장식 — 면적 ~5400~5600으로
+# BADGE_MAX_AREA_PX보다 훨씬 큼. (2) 우측 상단 코너 스우시 장식(챕터 배지와
+# 비슷한 자리, x0/page_w>0.80·y0/page_h<0.20) — 아래 코너 제외로 거른다.
+# (3) 소단원 안 스텝 번호("1 수직선 우" 등) — 면적 ~620~680으로 BADGE_MIN_AREA_PX
+# 미만. (1)(3)은 크기로, (2)는 위치로 제외한다.
+BADGE_CORNER_X_MIN = 0.80
+BADGE_CORNER_Y_MAX = 0.20
 
 
 def detect_icon_badges(img: np.ndarray) -> list[Box]:
@@ -287,10 +300,12 @@ def detect_icon_badges(img: np.ndarray) -> list[Box]:
     # 원 안에 흰 글자("확인"/"체크" 2줄 등)가 있으면 색 성분이 글자 획을 따라
     # 여러 조각으로 쪼개진다(실측: 29쪽 "확인체크 44"가 2개 성분으로 분리돼
     # IoU 0.19까지 떨어짐) — 닫힘 연산으로 그 틈을 메워 하나의 원으로 합친다.
-    # 커널을 13px까지 키우면 "필수" 배지(원+텍스트가 폭 넓게 갈라짐)는 합쳐지고,
-    # 그 이상(21px) 키워도 안 합쳐지는 조각은 배지가 아니라 근처의 무관한 색
-    # 장식일 가능성이 높아 억지로 더 키우지 않는다 — 대신 아래에서 종횡비로 거른다.
-    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
+    # 17px로 키우면 "필수" 배지(원+텍스트가 폭 넓게 갈라짐)는 합쳐지고, 10쪽
+    # "개념원리 이해" 섹션 배너의 스우시 조각과 "01" 숫자 부분도 합쳐져서
+    # (143x111, 면적 7264) 아래 BADGE_MAX_AREA_PX로 걸러진다 — 반대로 배지
+    # 원과 그 옆 번호("29" 등)는 22px 정도 떨어져 있어 17px로는 안 합쳐짐을
+    # 확인했다(실측).
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
     color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, close_kernel)
 
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -302,7 +317,11 @@ def detect_icon_badges(img: np.ndarray) -> list[Box]:
     for i in range(1, n):
         x, y, w, hh = stats[i, 0], stats[i, 1], stats[i, 2], stats[i, 3]
         area = stats[i, cv2.CC_STAT_AREA]
-        if area < BADGE_MIN_AREA_PX or hh < BADGE_MIN_HEIGHT_PX:
+        if not (BADGE_MIN_AREA_PX <= area <= BADGE_MAX_AREA_PX):
+            continue
+        if not (BADGE_MIN_HEIGHT_PX <= hh <= BADGE_MAX_HEIGHT_PX) or w > BADGE_MAX_WIDTH_PX:
+            continue
+        if x / page_w > BADGE_CORNER_X_MIN and y / page_h < BADGE_CORNER_Y_MAX:
             continue
         icon_box = Box(int(x), int(y), int(x + w), int(y + hh))
         boxes.append(_extend_with_adjacent_number(ink, icon_box, page_w))
