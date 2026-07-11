@@ -174,7 +174,10 @@ function renderReflow(page) {
     const layout = ROLE_LAYOUT[role] || ROLE_LAYOUT.paragraph;
     const maxScale = role === "paragraph" ? TEXT_MAX_SCALE : MAX_SCALE;
 
-    const hasLines = (role === "paragraph" || role === "equation") && Array.isArray(block.lines) && block.lines.length > 1;
+    // 줄이 1개뿐이어도(제목 옆 장식 여백을 실제 잉크 범위로 좁힌 경우 등) 그
+    // 폭을 배율 계산에 써야 한다 — length>1로만 걸면 이런 1줄짜리는 block.bbox
+    // (아직 장식 여백 포함된 넓은 원래 폭)로 다시 새서 배율이 안 커진다.
+    const hasLines = (role === "paragraph" || role === "equation") && Array.isArray(block.lines) && block.lines.length > 0;
 
     let scale;
     if (layout.mode === "auto") {
