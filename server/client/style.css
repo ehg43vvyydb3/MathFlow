@@ -14,20 +14,9 @@
   --bottombar-h: 56px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #121212;
-    --fg: #e8e8e8;
-    --fg-muted: #9a9a9a;
-    --border: #2c2c2c;
-    --accent: #5b8dff;
-    --accent-fg: #0b0b0b;
-    --surface: #1e1e1e;
-    --surface-hover: #292929;
-    --label-bg: #1e2340;
-    --label-border: #5b6dff;
-  }
-}
+/* 다크모드에서도 배경을 어둡게 안 바꾼다 — 실제 교재 페이지(0021~0032.webp 등
+   실측)는 거의 전부 순백색(#ffffff)이라, 어두운 UI 배경 위에 흰 페이지가 뜨면
+   테두리처럼 도드라져서 부자연스럽다. 페이지 색에 맞춰 항상 밝은 테마로 고정. */
 
 * { box-sizing: border-box; }
 

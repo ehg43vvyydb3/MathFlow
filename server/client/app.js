@@ -153,7 +153,11 @@ function renderReflow(page) {
     return;
   }
 
-  const containerW = el.reflowView.clientWidth || 320;
+  // clientWidth는 padding까지 포함한 값이라, 그걸 그대로 블록 폭으로 쓰면
+  // 좌우 padding(28px)만큼 넘쳐서 가로 스크롤이 생긴다 — 실제 콘텐츠 폭만 써야 한다.
+  const reflowStyle = getComputedStyle(el.reflowView);
+  const horizontalPadding = parseFloat(reflowStyle.paddingLeft) + parseFloat(reflowStyle.paddingRight);
+  const containerW = (el.reflowView.clientWidth || 320) - horizontalPadding;
   const imgUrl = pageImageUrl(page);
   const pageW = meta.width_px;
   const pageH = meta.height_px;
