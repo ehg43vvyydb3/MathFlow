@@ -352,6 +352,16 @@ el.modeImage.onclick = () => setViewMode("image");
 el.modeReflow.onclick = () => setViewMode("reflow");
 el.btnPrev.onclick = () => goToPage(state.currentPage - 1);
 el.btnNext.onclick = () => goToPage(state.currentPage + 1);
+
+// 좌우 화살표로 페이지 이동. 페이지 입력창 등에 포커스가 있을 때는 원래
+// 하던 대로 커서 이동에 쓰이게 두고 페이지 넘김으로 가로채지 않는다.
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  e.preventDefault();
+  goToPage(state.currentPage + (e.key === "ArrowRight" ? 1 : -1));
+});
 el.pageInput.onchange = () => goToPage(parseInt(el.pageInput.value, 10) || state.currentPage);
 el.btnFavorite.onclick = () => {
   toggleFavorite(state.currentPage);
