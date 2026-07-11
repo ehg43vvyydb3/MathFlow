@@ -670,6 +670,23 @@ class ReviewWindow(QMainWindow):
 
     def _get_page_entries(self, page_number: int) -> list[dict]:
         if page_number not in self.pages_blocks:
+            # 캐시에 없는 페이지(처음 여는 단원 등)는 블록마다 VLM을 호출하는데,
+            # 크기가 큰 블록(예: 33쪽처럼 페이지 거의 전체를 덮는 블록)은 호출
+            # 한 번에 1분 넘게 걸리기도 한다. progress/processEvents 없이 그냥
+            # 돌리면 그 시간 내내 이벤트 루프가 멎어서 OS가 "응답 없음"으로
+            # 표시한다 — _run_recache와 같은 패턴으로 진행 다이얼로그를 붙여서
+            # 화면이 계속 반응하게 하고, 오래 걸리면 취소도 가능하게 한다.
+            progress = QProgressDialog(f"{page_number}쪽 분석 중...", "취소", 0, 1, self)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
+            progress.setMinimumDuration(500)  # 캐시가 대부분이라 금방 끝나면 아예 안 뜨게
+            progress.setValue(0)
+
+            def on_progress(i: int, total: int) -> None:
+                progress.setRange(0, total)
+                progress.setValue(i)
+                progress.setLabelText(f"{page_number}쪽 블록 분류 중... ({i}/{total})")
+                QApplication.processEvents()
+
             entries = pipeline.run_page(
                 self.pdf_path,
                 page_index=page_number - 1,
@@ -677,7 +694,10 @@ class ReviewWindow(QMainWindow):
                 dpi=150,
                 backend=self.backend,
                 cache=self.cache,
+                on_progress=on_progress,
+                should_stop=progress.wasCanceled,
             )
+            progress.setValue(progress.maximum())
             self.cache.save()
             self.pages_blocks[page_number] = entries
         flags = review.flag_needs_review([e["block"] for e in self.pages_blocks[page_number]])
