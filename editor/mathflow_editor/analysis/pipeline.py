@@ -160,7 +160,20 @@ def run_page(
             # 그 부분만이라도 줄 단위로 쌓으면 좁은 폭에서 더 크게 보여줄 수 있다.
             line_boxes = segment.detect_lines_in_box(mask_lines, box)
             if len(line_boxes) > 1:
-                block["lines"] = [{"bbox": lb.norm(w, h)} for lb in line_boxes]
+                # 문단이 이미 여러 줄로 나뉘었어도, 그 줄 하나하나가 여전히 화면
+                # 폭 기준으로 너무 넓을 수 있다(15쪽 p15_b09, 3줄 중 앞 2줄이 폭
+                # 0.657·0.656 — 문단 전체가 아니라 개별 줄 단위로도 같은 검사를
+                # 해야 그 줄들이 마저 잘린다). 각 줄을 따로 확인해서 필요하면
+                # 그 줄만 추가로 2등분한다.
+                final_lines: list[segment.Box] = []
+                for lb in line_boxes:
+                    if lb.norm(w, h)[2] > WRAP_WIDTH_THRESHOLD:
+                        wrapped_line = segment.wrap_long_line(mask_words, lb)
+                        if wrapped_line is not None:
+                            final_lines.extend(wrapped_line)
+                            continue
+                    final_lines.append(lb)
+                block["lines"] = [{"bbox": fb.norm(w, h)} for fb in final_lines]
             elif box.norm(w, h)[2] > WRAP_WIDTH_THRESHOLD:
                 # 이미 여러 줄로 안 쪼개졌는데(=한 줄) 화면 폭 기준으로 너무 넓은
                 # 경우 — 자연스러운 단어 간격에서 억지로 2등분해서 각 반쪽이 더
