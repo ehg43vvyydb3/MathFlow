@@ -101,8 +101,30 @@ def run_page(
     boxes = segment.detect_blocks(img)
     mask_lines = segment.compute_mask_lines(img)  # text 블록의 줄 단위 분리용, 페이지당 한 번
     mask_words = segment.compute_mask_words(img)  # 긴 한 줄 강제 줄바꿈의 단어 간격 검출용, 페이지당 한 번
+
+    # "필수 05"/"확인체크 12" 같은 원형 색상 배지는 detect_blocks가 못 잡는다
+    # (PLAN.md, 23페이지 diff에서 가장 큰 미해결 패턴) — 색으로 따로 찾아 채워
+    # 넣는다. 아직 완벽하지 않은 검출(발전 배지 등 다른 색 계열은 못 잡음,
+    # 드물게 위치가 살짝 어긋남)이라 VLM 분류를 거치지 않고 problem_number로
+    # 바로 넣되 needs_review=True로 표시해서 사람이 검토 UI에서 반드시
+    # 한 번 확인/보정하게 한다 — 자동으로 그냥 믿지 않는다.
+    def _iou(a: segment.Box, b: segment.Box) -> float:
+        ix0, iy0 = max(a.x0, b.x0), max(a.y0, b.y0)
+        ix1, iy1 = min(a.x1, b.x1), min(a.y1, b.y1)
+        if ix1 <= ix0 or iy1 <= iy0:
+            return 0.0
+        inter = (ix1 - ix0) * (iy1 - iy0)
+        area_a = (a.x1 - a.x0) * (a.y1 - a.y0)
+        area_b = (b.x1 - b.x0) * (b.y1 - b.y0)
+        union = area_a + area_b - inter
+        return inter / union if union > 0 else 0.0
+
+    badge_boxes = [
+        bb for bb in segment.detect_icon_badges(img) if not any(_iou(bb, ob) > 0.2 for ob in boxes)
+    ]
+
     prefix = id_prefix or f"p{page_number}"
-    total = len(boxes)
+    total = len(boxes) + len(badge_boxes)
 
     results = []
     for i, box in enumerate(boxes):
@@ -150,6 +172,26 @@ def run_page(
         # 블록 안에 못 넣는다 — 별도 래퍼로 감싸서 스키마 오염 없이 전달.
         results.append({"block": block, "needs_review": bool(cached.get("needs_review"))})
 
+        if on_progress is not None:
+            on_progress(i + 1, total)
+
+    # 색상으로 찾은 배지는 VLM을 거치지 않고 바로 problem_number로 넣는다 —
+    # 이미 타입을 색으로 확신하는데 VLM에 다시 물어볼 이유가 없다. 대신
+    # needs_review=True로 항상 표시(위 설명 참고).
+    for j, box in enumerate(badge_boxes):
+        if should_stop is not None and should_stop():
+            break
+        i = len(boxes) + j
+        block = {
+            "id": f"{prefix}_b{i:02d}",
+            "page": page_number,
+            "type": "problem_number",
+            "bbox": box.norm(w, h),
+            "order": i,
+            "confidence": 0.6,
+            "reflow": {"role": ROLE_BY_TYPE["problem_number"]},
+        }
+        results.append({"block": block, "needs_review": True})
         if on_progress is not None:
             on_progress(i + 1, total)
     return results

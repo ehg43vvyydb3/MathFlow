@@ -246,6 +246,88 @@ def wrap_long_line(mask_words: np.ndarray, box: Box, min_gap_px: int = 4) -> lis
     ]
 
 
+# "필수"/"확인체크" 원형 배지(청록~파랑 계열) 색상 범위. 실측(11쪽 "필수 01":
+# HSV H≈98, 22쪽 "확인체크 29": HSV H≈111, 둘 다 S 80~140·V 95~200 안)해서
+# 두 라벨이 같은 브랜드 색 계열임을 확인했다 — 하나의 범위로 같이 잡는다.
+BADGE_HUE_MIN = 85
+BADGE_HUE_MAX = 125
+BADGE_SAT_MIN = 60
+BADGE_VAL_MIN = 40
+BADGE_VAL_MAX = 250
+BADGE_MIN_AREA_PX = 200  # 안티앨리어싱 경계 등 잡음 성분 제외
+# 배지 옆 번호("29" 등)가 검정이 아니라 배지와 비슷한 짙은 남색 계열이라 색
+# 마스크에 따로 걸리는 경우가 있다(22쪽 실측) — 번호 성분은 높이가 22px인 데
+# 반해 실제 배지 원은 34~63px라 뚜렷이 낮으니, 높이로 번호 성분을 걸러낸다.
+BADGE_MIN_HEIGHT_PX = 25
+
+
+def detect_icon_badges(img: np.ndarray) -> list[Box]:
+    """"필수 05"/"확인체크 12"처럼 번호가 원형 색상 배지에 붙어 나오는
+    problem_number를 색상으로 찾는다.
+
+    이 배지는 원 안에 라벨 글자("필수"/"확인체크")까지 있고 번호와의 간격이
+    일정치 않아서, 투영 기반 세그멘테이션(detect_blocks)이 아예 못 뽑고
+    놓친다 — 23페이지 diff에서 이 패턴이 28건으로 가장 큰 미해결 패턴이었다
+    (PLAN.md 참고). 원(아이콘)을 색으로 먼저 찾고, 그 오른쪽에 붙은 검정
+    숫자까지 bbox를 넓혀서 problem_number 하나로 반환한다.
+    """
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h_ch, s_ch, v_ch = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+    color_mask = (
+        (h_ch >= BADGE_HUE_MIN)
+        & (h_ch <= BADGE_HUE_MAX)
+        & (s_ch >= BADGE_SAT_MIN)
+        & (v_ch >= BADGE_VAL_MIN)
+        & (v_ch <= BADGE_VAL_MAX)
+    ).astype(np.uint8) * 255
+    # 원 안에 흰 글자("확인"/"체크" 2줄 등)가 있으면 색 성분이 글자 획을 따라
+    # 여러 조각으로 쪼개진다(실측: 29쪽 "확인체크 44"가 2개 성분으로 분리돼
+    # IoU 0.19까지 떨어짐) — 닫힘 연산으로 그 틈을 메워 하나의 원으로 합친다.
+    # 커널을 13px까지 키우면 "필수" 배지(원+텍스트가 폭 넓게 갈라짐)는 합쳐지고,
+    # 그 이상(21px) 키워도 안 합쳐지는 조각은 배지가 아니라 근처의 무관한 색
+    # 장식일 가능성이 높아 억지로 더 키우지 않는다 — 대신 아래에서 종횡비로 거른다.
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13))
+    color_mask = cv2.morphologyEx(color_mask, cv2.MORPH_CLOSE, close_kernel)
+
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    ink = ink_mask(gray)
+    page_h, page_w = img.shape[:2]
+
+    n, _labels, stats, _centroids = cv2.connectedComponentsWithStats(color_mask, connectivity=8)
+    boxes: list[Box] = []
+    for i in range(1, n):
+        x, y, w, hh = stats[i, 0], stats[i, 1], stats[i, 2], stats[i, 3]
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area < BADGE_MIN_AREA_PX or hh < BADGE_MIN_HEIGHT_PX:
+            continue
+        icon_box = Box(int(x), int(y), int(x + w), int(y + hh))
+        boxes.append(_extend_with_adjacent_number(ink, icon_box, page_w))
+    return boxes
+
+
+def _extend_with_adjacent_number(ink: np.ndarray, icon_box: Box, page_w: int, max_gap_px: int = 15) -> Box:
+    """원형 아이콘 오른쪽에 붙은 숫자(검정 글자)까지 bbox를 넓힌다."""
+    x_limit = min(page_w, icon_box.x1 + 80)  # 두 자리 숫자까지 넉넉히 볼 폭
+    band = ink[icon_box.y0 : icon_box.y1, icon_box.x1 : x_limit]
+    if band.size == 0:
+        return icon_box
+    col_has_ink = band.sum(axis=0) > 0
+
+    last_ink_x = None
+    gap = 0
+    for i, has_ink in enumerate(col_has_ink):
+        if has_ink:
+            last_ink_x = i
+            gap = 0
+        else:
+            gap += 1
+            if last_ink_x is not None and gap > max_gap_px:
+                break
+    if last_ink_x is None:
+        return icon_box
+    return Box(icon_box.x0, icon_box.y0, icon_box.x1 + last_ink_x + 1, icon_box.y1)
+
+
 def detect_blocks(img: np.ndarray) -> list[Box]:
     """페이지 이미지에서 블록 후보 bbox 리스트를 뽑는다 (타입 분류 없음)."""
     mask_lines = compute_mask_lines(img)
