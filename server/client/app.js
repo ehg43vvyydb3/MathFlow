@@ -174,9 +174,18 @@ function renderReflow(page) {
     const layout = ROLE_LAYOUT[role] || ROLE_LAYOUT.paragraph;
     const maxScale = role === "paragraph" ? TEXT_MAX_SCALE : MAX_SCALE;
 
+    const hasLines = (role === "paragraph" || role === "equation") && Array.isArray(block.lines) && block.lines.length > 1;
+
     let scale;
     if (layout.mode === "auto") {
       scale = layout.targetHeightPx / (h * pageH);
+    } else if (hasLines) {
+      // 줄 단위로 쪼갠 경우, 원래 블록 전체 폭(w)이 아니라 그 중 가장 넓은
+      // 개별 줄의 폭을 기준으로 배율을 정해야 한다 — 안 그러면 강제 줄바꿈으로
+      // 줄을 좁혀놔도 화면에는 여전히 옛날(안 쪼갠) 폭 기준 작은 배율 그대로
+      // 그려져서 글자가 안 커진다.
+      const maxLineW = Math.max(...block.lines.map((ln) => ln.bbox[2]));
+      scale = containerW / (maxLineW * pageW);
     } else {
       scale = containerW / (w * pageW);
     }
@@ -185,7 +194,7 @@ function renderReflow(page) {
     // 상한에 걸리면 화면 폭을 다 못 채우니 가운데 정렬한다.
     scale = Math.min(scale, maxScale);
 
-    if ((role === "paragraph" || role === "equation") && Array.isArray(block.lines) && block.lines.length > 1) {
+    if (hasLines) {
       // figure/table과 달리 text/formula는 줄 사이가 뚜렷이 비어 있으면(문단의
       // 줄바꿈, 여러 줄 수식 유도 과정) 줄마다 독립적이다 — 편집기가 분수·지수처럼
       // 한 줄 안에서 2차원 구조인 부분은 애초에 안 쪼개고 lines를 만들어 보낸다.
