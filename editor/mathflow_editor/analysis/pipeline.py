@@ -117,10 +117,14 @@ def run_page(
             "confidence": cached["confidence"],
             "reflow": {"role": ROLE_BY_TYPE.get(block_type, "paragraph")},
         }
-        if block_type == "text":
-            # formula/figure/table은 줄 사이 2차원적 위치 관계 자체가 의미라
-            # (분수선, 지수 등) 쪼개면 안 된다 — text만 줄 단위로 나눠서, 뷰어가
-            # 문단을 통째로 이미지 하나로 뭉치지 않고 줄마다 따로 배치할 수 있게 한다.
+        if block_type in ("text", "formula"):
+            # figure/table은 줄 사이 2차원적 위치 관계 자체가 의미라 쪼개면 안
+            # 된다. formula는 분수·지수처럼 위험해 보이지만, 실제로는 분수
+            # 막대(또는 그 일부)가 해당 행에 잉크를 남기기 때문에 "행 전체가
+            # 거의 빈" 지점에서만 끊는 이 로직이 분수를 관통해서 자르는 일이
+            # 없음을 실제 블록(p24_bm14, p18_b08 등, 분수+설명문 혼합)으로
+            # 확인했다 — 여러 줄 유도 과정(=... =... ∴...)이 흔히 섞여 있어서
+            # 그 부분만이라도 줄 단위로 쌓으면 좁은 폭에서 더 크게 보여줄 수 있다.
             line_boxes = segment.detect_lines_in_box(mask_lines, box)
             if len(line_boxes) > 1:
                 block["lines"] = [{"bbox": lb.norm(w, h)} for lb in line_boxes]

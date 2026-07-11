@@ -185,11 +185,12 @@ function renderReflow(page) {
     // 상한에 걸리면 화면 폭을 다 못 채우니 가운데 정렬한다.
     scale = Math.min(scale, maxScale);
 
-    if (role === "paragraph" && Array.isArray(block.lines) && block.lines.length > 1) {
-      // formula/figure/table과 달리 text는 줄마다 독립적이라(분수선처럼 줄 사이
-      // 2차원 위치 관계가 없음), 문단 전체를 이미지 한 장으로 뭉치지 않고 줄
-      // 단위로 잘라 쌓는다 — 짧은 마지막 줄이 억지로 늘어나 보이지 않고, 사이드바
-      // 처럼 좁은 문단도 상한 안에서 최대한 크게 보인다.
+    if ((role === "paragraph" || role === "equation") && Array.isArray(block.lines) && block.lines.length > 1) {
+      // figure/table과 달리 text/formula는 줄 사이가 뚜렷이 비어 있으면(문단의
+      // 줄바꿈, 여러 줄 수식 유도 과정) 줄마다 독립적이다 — 편집기가 분수·지수처럼
+      // 한 줄 안에서 2차원 구조인 부분은 애초에 안 쪼개고 lines를 만들어 보낸다.
+      // 문단/수식 전체를 이미지 한 장으로 뭉치지 않고 줄 단위로 잘라 쌓으면, 짧은
+      // 마지막 줄이 억지로 늘어나 보이지 않고 좁은 블록도 상한 안에서 최대한 커진다.
       const group = document.createElement("div");
       group.className = `rblock-group role-${role}`;
       for (const line of block.lines) {

@@ -100,7 +100,7 @@
         },
         "lines": {
           "type": "array",
-          "description": "(선택) text 블록의 줄 단위 정보. 정밀 리플로우/줄 하이라이트용.",
+          "description": "(선택) 줄 단위 정보. 주로 text 블록에 쓰지만, formula처럼 줄 사이에 2차원적 위치 관계(분수·지수)가 없는 타입에도 쓸 수 있다. 정밀 리플로우/줄 하이라이트용.",
           "items": {
             "type": "object",
             "required": ["bbox"],
