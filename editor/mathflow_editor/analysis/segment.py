@@ -184,6 +184,7 @@ def detect_blocks(img: np.ndarray) -> list[Box]:
     # (10, 12, 15, 17, 18, 19, 20쪽에서 사용자가 조각난 그림을 수동으로 병합).
     # 사이드바 컬럼만 간격 허용치를 넉넉하게 잡는다.
     page_w = mask_lines.shape[1]
+    page_h = mask_lines.shape[0]
     SIDEBAR_X_RATIO = 0.65
     SIDEBAR_GAP_MULTIPLIER = 2.2
 
@@ -205,18 +206,28 @@ def detect_blocks(img: np.ndarray) -> list[Box]:
                 continue
             bx0, bx1 = x0 + xs.min(), x0 + xs.max() + 1
             box = Box(int(bx0), int(y0), int(bx1), int(y1))
-            if _is_debris(box):
+            if _is_debris(box, page_w, page_h):
                 continue
             boxes.append(box)
 
     boxes = _split_leading_labels(mask_lines, boxes)
     boxes = _split_tall_lines(mask_lines, boxes)
-    boxes = [b for b in boxes if not _is_debris(b)]
+    boxes = [b for b in boxes if not _is_debris(b, page_w, page_h)]
     return [_pad_box(b, mask_lines.shape[1], mask_lines.shape[0]) for b in boxes]
 
 
-def _is_debris(box: Box, min_side_px: int = 7, min_area_px: int = 400) -> bool:
-    """장식 괘선 조각, 스캔 먼지 같은 미세 블록인지 판정.
+# 우측 상단 챕터 배지(둥근 탭 "Ⅰ-1" + 그 아래 세로로 회전된 소단원명) 영역.
+# 이 책 전체에서 페이지마다 거의 같은 자리(x0 0.91~0.92, y0 0.08 안팎)에
+# 나오는 순수 내비게이션 장식이라 실제 학습 콘텐츠가 아니다 — 23페이지 diff에서
+# 사용자가 6번 전부 일관되게 지운 걸 확인(13·19·21·23·25·31쪽), 크롭해서 실제로
+# "Ⅰ-1"+세로 텍스트인 것도 눈으로 확인했다. "더 다양한 문제는 RPM..." 같은 다른
+# 헤더 장식은 실제 문제 내용과 한 블록에 뭉쳐 있어서 통째로 지우면 위험해 제외했다.
+CORNER_BADGE_X_MIN = 0.90
+CORNER_BADGE_Y_MAX = 0.20
+
+
+def _is_debris(box: Box, page_w: int, page_h: int, min_side_px: int = 7, min_area_px: int = 400) -> bool:
+    """장식 괘선 조각, 스캔 먼지, 챕터 배지 같은 비-콘텐츠 블록인지 판정.
 
     10~12쪽 실편집에서 사용자가 일관되게 삭제한 블록들(예: 4~8px 두께의
     장식 괘선 조각, 10px 미만 점 조각)에서 도출한 기준. 정상 문제번호도
@@ -224,7 +235,11 @@ def _is_debris(box: Box, min_side_px: int = 7, min_area_px: int = 400) -> bool:
     조각도 있어 분할 후에도 한 번 더 거른다.
     """
     w, h = box.x1 - box.x0, box.y1 - box.y0
-    return w < min_side_px or h < min_side_px or w * h < min_area_px
+    if w < min_side_px or h < min_side_px or w * h < min_area_px:
+        return True
+    if box.x0 / page_w > CORNER_BADGE_X_MIN and box.y1 / page_h < CORNER_BADGE_Y_MAX:
+        return True
+    return False
 
 
 def _pad_box(box: Box, page_w: int, page_h: int, pad: int = 3) -> Box:
