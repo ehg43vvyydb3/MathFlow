@@ -19,9 +19,11 @@ BLOCK_TYPES = ["text", "figure", "formula", "table", "problem_number"]
 
 PROMPT = f"""이 이미지는 스캔한 수학 교과서 페이지에서 잘라낸 블록 하나다.
 다음 중 하나로 분류하라: {", ".join(BLOCK_TYPES)}
-- text: 일반 문단/문장
+- text: 일반 문단/문장. 수식이 한두 개 섞여 있어도, "~하면", "따라서", "즉"처럼
+  문장이 이어지며 풀이를 설명하는 내용이면 text다 (formula로 분류하지 말 것).
 - figure: 그림, 도형, 그래프
-- formula: 독립된 수식 (문단과 분리되어 박스나 별도 줄에 있는 식)
+- formula: 설명 문장 없이 수식 자체가 여러 줄에 걸쳐 나열된 것
+  (예: "AB²=AC²+BC² \n =|x2-x1|²+|y2-y1|² \n ∴ AB=√(...)")
 - table: 표
 - problem_number: 문제 번호만 있는 작은 라벨 (예: "26", "(1)")
 

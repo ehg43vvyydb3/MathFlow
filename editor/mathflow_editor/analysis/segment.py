@@ -152,12 +152,24 @@ def detect_blocks(img: np.ndarray) -> list[Box]:
     median_h = float(np.median(line_heights)) if line_heights else 20.0
     gap_thresh = max(6, int(median_h * 0.9))
 
+    # 이 책은 본문(왼쪽)+사이드바(오른쪽 ~30%) 2단 구성이 반복된다. 사이드바의
+    # 그림(좌표평면 등)은 내부에 여백이 커서, 본문 기준 gap_thresh로는 한 그림이
+    # 여러 조각으로 쪼개진다 — 실제 편집 로그에서 반복적으로 관찰된 패턴
+    # (10, 12, 15, 17, 18, 19, 20쪽에서 사용자가 조각난 그림을 수동으로 병합).
+    # 사이드바 컬럼만 간격 허용치를 넉넉하게 잡는다.
+    page_w = mask.shape[1]
+    SIDEBAR_X_RATIO = 0.65
+    SIDEBAR_GAP_MULTIPLIER = 2.2
+
     boxes: list[Box] = []
     for x0, x1 in columns:
         bands = detect_line_bands(mask_lines, x0, x1)
         # 너무 작은(잡음) 밴드 제거
         bands = [b for b in bands if (b[1] - b[0]) >= 3]
-        blocks = group_bands_to_blocks(bands, gap_thresh)
+        col_gap_thresh = gap_thresh
+        if x0 / page_w > SIDEBAR_X_RATIO:
+            col_gap_thresh = int(gap_thresh * SIDEBAR_GAP_MULTIPLIER)
+        blocks = group_bands_to_blocks(bands, col_gap_thresh)
         for y0, y1 in blocks:
             # 블록 내부에서 실제 잉크가 있는 x 범위로 폭을 다시 타이트하게
             sub = mask_lines[y0:y1, x0:x1]
