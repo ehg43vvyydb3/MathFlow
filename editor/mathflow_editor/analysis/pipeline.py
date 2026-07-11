@@ -24,6 +24,16 @@ ROLE_BY_TYPE = {
     "problem_number": "label",
 }
 
+# 뷰어의 리플로우 컨테이너는 폰 화면 폭에 맞춰지고(좌우 패딩 14px씩 제외),
+# 페이지는 150dpi로 렌더링돼 폭이 ~1073px 안팎이다(실측 12쪽 기준). 흔한
+# 안드로이드 기준 폭인 360px(컨테이너 360-28=332px)보다 좁은 폰에서, 정규화
+# 폭이 이 비율(332/1073)보다 넓은 한 줄짜리 블록은 원본 해상도보다 작게
+# 줄어들어(scale<1) 글자가 부자연스럽게 작아진다 — 처음에 380px 기준으로
+# 잡았더니 정작 이 기능의 계기였던 12쪽 필수 12번 문제(정규화 폭 0.3541)가
+# 근소한 차이(0.35415)로 걸러지지 않아 360px로 낮췄다. 이미 여러 줄로
+# 쪼개진 블록(len(line_boxes) > 1)은 각 줄이 이미 짧으니 대상에서 제외한다.
+WRAP_WIDTH_THRESHOLD = 332 / 1073
+
 
 class BlockCache:
     """블록 이미지 해시 -> VLM 분류 결과. 책 단위로 하나씩 둔다."""
@@ -90,6 +100,7 @@ def run_page(
     h, w = img.shape[:2]
     boxes = segment.detect_blocks(img)
     mask_lines = segment.compute_mask_lines(img)  # text 블록의 줄 단위 분리용, 페이지당 한 번
+    mask_words = segment.compute_mask_words(img)  # 긴 한 줄 강제 줄바꿈의 단어 간격 검출용, 페이지당 한 번
     prefix = id_prefix or f"p{page_number}"
     total = len(boxes)
 
@@ -128,6 +139,13 @@ def run_page(
             line_boxes = segment.detect_lines_in_box(mask_lines, box)
             if len(line_boxes) > 1:
                 block["lines"] = [{"bbox": lb.norm(w, h)} for lb in line_boxes]
+            elif box.norm(w, h)[2] > WRAP_WIDTH_THRESHOLD:
+                # 이미 여러 줄로 안 쪼개졌는데(=한 줄) 화면 폭 기준으로 너무 넓은
+                # 경우 — 자연스러운 단어 간격에서 억지로 2등분해서 각 반쪽이 더
+                # 크게 보이게 한다(12쪽 필수 12번 "두 점에서 ~ 점 Q의" 같은 사례).
+                wrapped = segment.wrap_long_line(mask_words, box)
+                if wrapped is not None:
+                    block["lines"] = [{"bbox": wb.norm(w, h)} for wb in wrapped]
         # blocks.schema.json은 additionalProperties: false라 needs_review를
         # 블록 안에 못 넣는다 — 별도 래퍼로 감싸서 스키마 오염 없이 전달.
         results.append({"block": block, "needs_review": bool(cached.get("needs_review"))})

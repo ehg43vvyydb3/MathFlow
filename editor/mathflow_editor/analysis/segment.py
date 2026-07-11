@@ -163,6 +163,89 @@ def detect_lines_in_box(mask_lines: np.ndarray, box: Box) -> list[Box]:
     return lines
 
 
+def compute_mask_words(img: np.ndarray) -> np.ndarray:
+    """글자 획 사이 틈만 메운(음절 내부는 붙되 음절/단어 사이 간격은 남기는) 마스크.
+
+    compute_mask_lines의 (9,3) 커널은 줄 전체를 한 덩어리로 뭉치는 게 목적이라
+    닫는 힘이 너무 세다 — 실측(p12_b14, "x축 위의 점의 좌표는 (a, 0), y축
+    위의 점의 좌표는 (0,b)로 놓는다.")에서 그 커널을 단어 간격 찾기에 그대로
+    쓰면 연결성분이 2개(gap 1개)로만 뭉개져서 억지 분할 지점이 그 하나뿐이었고,
+    하필 "(a," 와 "0)" 사이라는 어색한 자리에서 끊겼다. (5,3)은 같은 이미지에서
+    연결성분 14개(gap 13개)를 남겨 실제 어절 경계("y축"/"위의" 사이)가 중앙에
+    가장 가까운 후보로 자연스럽게 뽑혔다.
+    """
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    mask = ink_mask(gray)
+    word_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 3))
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, word_kernel)
+
+
+def _line_components(mask_words: np.ndarray, box: Box) -> list[tuple[int, int, int]]:
+    """박스(이미 한 줄로 간주) 내부의 연결 성분을 (x0, width, height)로, x순 정렬.
+
+    폭 3px 미만인 성분은 제외한다 — 15쪽 p15_b07에서 표/그림 경계선이 박스
+    가장자리에 살짝 걸려 들어온 폭 1px짜리 성분이 하나 섞여 있었는데, 이걸
+    실제 내용으로 치면 "중간 지점"이 진짜 글자 범위를 한참 벗어난 위치로
+    계산돼 분할했을 때 한쪽이 거의 텅 비는 문제가 있었다.
+    """
+    sub = mask_words[box.y0 : box.y1, box.x0 : box.x1]
+    n, _labels, stats, _centroids = cv2.connectedComponentsWithStats(sub, connectivity=8)
+    comps = [
+        (int(stats[i, cv2.CC_STAT_LEFT]), int(stats[i, cv2.CC_STAT_WIDTH]), int(stats[i, cv2.CC_STAT_HEIGHT]))
+        for i in range(1, n)
+        if stats[i, cv2.CC_STAT_WIDTH] >= 3
+    ]
+    comps.sort()
+    return comps
+
+
+def wrap_long_line(mask_words: np.ndarray, box: Box, min_gap_px: int = 4) -> list[Box] | None:
+    """자연적인 줄바꿈이 없는 긴 한 줄을, 중간 지점에 가장 가까운 자연스러운
+    단어 간격에서 억지로 2등분한다.
+
+    뷰어가 화면 폭에 맞추려고 원본보다 작게 줄여야 하는(스케일 < 1) 긴 문장을
+    이걸로 미리 쪼개 두면, 각 반쪽은 폭이 절반이라 그만큼 배율을 더 키울 수
+    있다 — 진짜 텍스트 줄바꿈과 같은 효과. 적당한 간격을 못 찾으면 None.
+    """
+    comps = _line_components(mask_words, box)
+    if len(comps) < 2:
+        return None
+
+    content_x0 = comps[0][0]
+    content_x1 = comps[-1][0] + comps[-1][1]
+    box_w = box.x1 - box.x0
+    if box_w > 0 and (content_x1 - content_x0) / box_w < 0.5:
+        # 실제 잉크는 박스 폭의 절반도 안 채우는 경우 — 23페이지 전 범위 실측에서
+        # 이런 블록은 "긴 문장"이 아니라 표/그림 경계선 조각이 박스 가장자리에
+        # 살짝 끼어들어 박스 자체가 내용보다 훨씬 넓게 잡힌 세그멘테이션 문제였다
+        # (15쪽 p15_b07, 비율 0.25 — 나머지는 전부 0.85 이상). 이런 박스를 억지로
+        # 반으로 쪼개면 한쪽에 실제 내용이 거의 안 남는다 — 쪼개지 않는 편이 낫다.
+        return None
+    target_x = (content_x0 + content_x1) / 2
+
+    best_i, best_dist = None, None
+    for i in range(len(comps) - 1):
+        gap_start = comps[i][0] + comps[i][1]
+        gap_end = comps[i + 1][0]
+        gap = gap_end - gap_start
+        if gap < min_gap_px:
+            continue
+        gap_center = (gap_start + gap_end) / 2
+        dist = abs(gap_center - target_x)
+        if best_dist is None or dist < best_dist:
+            best_dist, best_i = dist, i
+    if best_i is None:
+        return None
+
+    gap_start = comps[best_i][0] + comps[best_i][1]
+    gap_end = comps[best_i + 1][0]
+    split_x = box.x0 + (gap_start + gap_end) // 2
+    return [
+        Box(box.x0, box.y0, split_x, box.y1),
+        Box(split_x, box.y0, box.x1, box.y1),
+    ]
+
+
 def detect_blocks(img: np.ndarray) -> list[Box]:
     """페이지 이미지에서 블록 후보 bbox 리스트를 뽑는다 (타입 분류 없음)."""
     mask_lines = compute_mask_lines(img)
