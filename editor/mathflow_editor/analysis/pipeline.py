@@ -89,6 +89,7 @@ def run_page(
     img = segment.render_page(pdf_path, page_index, dpi)
     h, w = img.shape[:2]
     boxes = segment.detect_blocks(img)
+    mask_lines = segment.compute_mask_lines(img)  # text 블록의 줄 단위 분리용, 페이지당 한 번
     prefix = id_prefix or f"p{page_number}"
     total = len(boxes)
 
@@ -116,6 +117,13 @@ def run_page(
             "confidence": cached["confidence"],
             "reflow": {"role": ROLE_BY_TYPE.get(block_type, "paragraph")},
         }
+        if block_type == "text":
+            # formula/figure/table은 줄 사이 2차원적 위치 관계 자체가 의미라
+            # (분수선, 지수 등) 쪼개면 안 된다 — text만 줄 단위로 나눠서, 뷰어가
+            # 문단을 통째로 이미지 하나로 뭉치지 않고 줄마다 따로 배치할 수 있게 한다.
+            line_boxes = segment.detect_lines_in_box(mask_lines, box)
+            if len(line_boxes) > 1:
+                block["lines"] = [{"bbox": lb.norm(w, h)} for lb in line_boxes]
         # blocks.schema.json은 additionalProperties: false라 needs_review를
         # 블록 안에 못 넣는다 — 별도 래퍼로 감싸서 스키마 오염 없이 전달.
         results.append({"block": block, "needs_review": bool(cached.get("needs_review"))})

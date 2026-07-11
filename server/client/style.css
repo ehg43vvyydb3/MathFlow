@@ -155,6 +155,18 @@ button {
   margin-bottom: 12px;
 }
 
+/* text 블록을 줄 단위로 쪼갠 경우 — 문단 간격은 그룹에, 줄 간격은 줄에 따로 준다
+   (.rline도 .rblock 클래스를 같이 갖고 있어서, 명시적으로 덮어써야 24px가 안 먹는다). */
+.rblock-group {
+  margin-bottom: 24px;
+}
+.rblock-group .rline {
+  margin-bottom: 3px;
+}
+.rblock-group .rline:last-child {
+  margin-bottom: 0;
+}
+
 /* ---------- 하단 네비게이션 ---------- */
 
 .bottombar {

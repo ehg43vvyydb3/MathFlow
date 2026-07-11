@@ -132,14 +132,40 @@ def group_bands_to_blocks(
     return blocks
 
 
-def detect_blocks(img: np.ndarray) -> list[Box]:
-    """페이지 이미지에서 블록 후보 bbox 리스트를 뽑는다 (타입 분류 없음)."""
+def compute_mask_lines(img: np.ndarray) -> np.ndarray:
+    """글자 내부 획 사이 틈을 메운 잉크 마스크 (줄 단위로 뭉쳐짐).
+
+    detect_blocks 내부에서도 쓰지만, 블록 타입이 확정된 뒤(text만) 줄 단위로
+    다시 쪼갤 때(detect_lines_in_box)도 필요해서 재사용 가능하게 분리했다.
+    """
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     mask = ink_mask(gray)
-
-    # 글자 내부 획 사이 틈을 메워 "줄"로 뭉치기 (가로 방향 closing)
     line_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
-    mask_lines = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, line_kernel)
+    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, line_kernel)
+
+
+def detect_lines_in_box(mask_lines: np.ndarray, box: Box) -> list[Box]:
+    """블록 내부의 개별 줄을 절대 좌표 Box 리스트로 뽑는다.
+
+    text 타입에만 쓴다 — formula/figure/table은 줄 사이 2차원적 위치 관계
+    자체가 의미라서(분수선, 지수 등) 줄 단위로 쪼개면 안 된다.
+    """
+    lines: list[Box] = []
+    for ry0, ry1 in _internal_line_bands(mask_lines, box):
+        if (ry1 - ry0) < 3:  # 1~2px짜리는 닫힘 연산 잔여물 등 잡음이지 줄이 아니다
+            continue
+        sub = mask_lines[box.y0 + ry0 : box.y0 + ry1, box.x0 : box.x1]
+        xs = np.nonzero(sub.sum(axis=0))[0]
+        if len(xs) == 0:
+            continue
+        lx0, lx1 = box.x0 + int(xs.min()), box.x0 + int(xs.max()) + 1
+        lines.append(Box(lx0, box.y0 + ry0, lx1, box.y0 + ry1))
+    return lines
+
+
+def detect_blocks(img: np.ndarray) -> list[Box]:
+    """페이지 이미지에서 블록 후보 bbox 리스트를 뽑는다 (타입 분류 없음)."""
+    mask_lines = compute_mask_lines(img)
 
     columns = detect_columns(mask_lines, min_gap_px=20)
 
@@ -157,7 +183,7 @@ def detect_blocks(img: np.ndarray) -> list[Box]:
     # 여러 조각으로 쪼개진다 — 실제 편집 로그에서 반복적으로 관찰된 패턴
     # (10, 12, 15, 17, 18, 19, 20쪽에서 사용자가 조각난 그림을 수동으로 병합).
     # 사이드바 컬럼만 간격 허용치를 넉넉하게 잡는다.
-    page_w = mask.shape[1]
+    page_w = mask_lines.shape[1]
     SIDEBAR_X_RATIO = 0.65
     SIDEBAR_GAP_MULTIPLIER = 2.2
 
@@ -186,7 +212,7 @@ def detect_blocks(img: np.ndarray) -> list[Box]:
     boxes = _split_leading_labels(mask_lines, boxes)
     boxes = _split_tall_lines(mask_lines, boxes)
     boxes = [b for b in boxes if not _is_debris(b)]
-    return [_pad_box(b, mask.shape[1], mask.shape[0]) for b in boxes]
+    return [_pad_box(b, mask_lines.shape[1], mask_lines.shape[0]) for b in boxes]
 
 
 def _is_debris(box: Box, min_side_px: int = 7, min_area_px: int = 400) -> bool:

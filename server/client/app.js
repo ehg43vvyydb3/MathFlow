@@ -29,6 +29,10 @@ const ROLE_LAYOUT = {
 // 페이지는 150dpi로 렌더링돼 있다. 이보다 훨씬 크게 늘리면 원본에 없는
 // 디테일을 억지로 만들어내는 셈이라 흐려진다 — 2배 정도가 실용적인 상한.
 const MAX_SCALE = 2.0;
+// 글자는 그림과 달리 좀 확대해도 알아보는 데 지장이 덜하다(원래 인쇄된 글자라
+// 획 굵기가 단순함) — text 블록만 상한을 더 풀어서, 좁은 사이드바 문단도
+// 화면 폭에 가깝게 키운다.
+const TEXT_MAX_SCALE = 3.2;
 
 const state = {
   book: null,
@@ -168,6 +172,7 @@ function renderReflow(page) {
     const [x, y, w, h] = block.bbox;
     const role = (block.reflow && block.reflow.role) || "paragraph";
     const layout = ROLE_LAYOUT[role] || ROLE_LAYOUT.paragraph;
+    const maxScale = role === "paragraph" ? TEXT_MAX_SCALE : MAX_SCALE;
 
     let scale;
     if (layout.mode === "auto") {
@@ -175,27 +180,49 @@ function renderReflow(page) {
     } else {
       scale = containerW / (w * pageW);
     }
-    // 원본 해상도 이상으로 늘리면 흐려진다 — 폭이 좁은 그림·수식을 화면 폭까지
-    // 억지로 키우지 않도록 배율에 상한을 둔다. 이 경우 화면 폭을 다 안 채우니
-    // 가운데 정렬한다 (아래 div.style.margin).
-    scale = Math.min(scale, MAX_SCALE);
+    // 원본 해상도 이상으로 늘리면 흐려진다 — 폭이 좁은 블록을 화면 폭까지
+    // 억지로 키우지 않도록 배율에 상한을 둔다(글자는 그림보다 상한이 느슨함).
+    // 상한에 걸리면 화면 폭을 다 못 채우니 가운데 정렬한다.
+    scale = Math.min(scale, maxScale);
 
+    if (role === "paragraph" && Array.isArray(block.lines) && block.lines.length > 1) {
+      // formula/figure/table과 달리 text는 줄마다 독립적이라(분수선처럼 줄 사이
+      // 2차원 위치 관계가 없음), 문단 전체를 이미지 한 장으로 뭉치지 않고 줄
+      // 단위로 잘라 쌓는다 — 짧은 마지막 줄이 억지로 늘어나 보이지 않고, 사이드바
+      // 처럼 좁은 문단도 상한 안에서 최대한 크게 보인다.
+      const group = document.createElement("div");
+      group.className = `rblock-group role-${role}`;
+      for (const line of block.lines) {
+        const lineDiv = cropDiv(imgUrl, pageW, pageH, line.bbox, scale, `role-${role}`);
+        lineDiv.classList.add("rline");
+        group.appendChild(lineDiv);
+      }
+      el.reflowView.appendChild(group);
+      continue;
+    }
+
+    const div = cropDiv(imgUrl, pageW, pageH, block.bbox, scale, `role-${role}`);
     const fullW = pageW * scale;
-    const fullH = pageH * scale;
-    const blockW = w * fullW;
-
-    const div = document.createElement("div");
-    div.className = `rblock role-${role}`;
-    div.style.width = `${blockW}px`;
-    div.style.height = `${h * fullH}px`;
-    div.style.backgroundImage = `url(${imgUrl})`;
-    div.style.backgroundSize = `${fullW}px ${fullH}px`;
-    div.style.backgroundPosition = `${-x * fullW}px ${-y * fullH}px`;
-    if (layout.mode === "full" && blockW < containerW) {
+    if (layout.mode === "full" && w * fullW < containerW) {
       div.style.margin = "0 auto 22px"; // 상한에 걸려 폭을 못 채운 경우 가운데 정렬
     }
     el.reflowView.appendChild(div);
   }
+}
+
+/** 페이지 이미지에서 bbox(정규화 좌표) 영역만 CSS 배경으로 잘라낸 div를 만든다. */
+function cropDiv(imgUrl, pageW, pageH, bbox, scale, extraClass) {
+  const [x, y, w, h] = bbox;
+  const fullW = pageW * scale;
+  const fullH = pageH * scale;
+  const div = document.createElement("div");
+  div.className = `rblock ${extraClass}`;
+  div.style.width = `${w * fullW}px`;
+  div.style.height = `${h * fullH}px`;
+  div.style.backgroundImage = `url(${imgUrl})`;
+  div.style.backgroundSize = `${fullW}px ${fullH}px`;
+  div.style.backgroundPosition = `${-x * fullW}px ${-y * fullH}px`;
+  return div;
 }
 
 function renderCurrent() {
