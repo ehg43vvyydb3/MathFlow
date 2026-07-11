@@ -6,8 +6,8 @@ const BOOK_ID = "gongtong-math-2";
 const API = ""; // 같은 오리진에서 서빙되므로 상대경로
 
 const UNITS = [
-  { id: "I-1", title: "Ⅰ-1. 평면좌표", start: 10, end: 33 },
-  { id: "I-2", title: "Ⅰ-2. 직선의 방정식", start: 34, end: 65 },
+  { id: "I-1", title: "Ⅰ-1. 평면좌표", start: 10, end: 32 },
+  { id: "I-2", title: "Ⅰ-2. 직선의 방정식", start: 33, end: 65 },
   { id: "I-3", title: "Ⅰ-3. 원의 방정식", start: 66, end: 97 },
   { id: "I-4", title: "Ⅰ-4. 도형의 이동", start: 98, end: 119 },
   { id: "II-1", title: "Ⅱ-1. 집합의 뜻과 포함 관계", start: 120, end: 137 },

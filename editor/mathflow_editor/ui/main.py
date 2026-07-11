@@ -13,7 +13,7 @@ from .review_window import ReviewWindow
 
 PDF_PATH = Path.home() / "Downloads" / "공통수학2.pdf"
 BOOK_ID = "gongtong-math-2"
-PAGE_RANGE = range(10, 34)  # "1. 평면좌표" 단원
+PAGE_RANGE = range(10, 33)  # "1. 평면좌표" 단원 (10~32쪽, 33쪽은 다음 단원 표지)
 
 
 def main() -> None:
