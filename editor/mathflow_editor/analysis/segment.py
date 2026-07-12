@@ -328,13 +328,26 @@ def detect_icon_badges(img: np.ndarray) -> list[Box]:
     return boxes
 
 
-def _extend_with_adjacent_number(ink: np.ndarray, icon_box: Box, page_w: int, max_gap_px: int = 15) -> Box:
-    """원형 아이콘 오른쪽에 붙은 숫자(검정 글자)까지 bbox를 넓힌다."""
+def _extend_with_adjacent_number(
+    ink: np.ndarray, icon_box: Box, page_w: int, max_gap_px: int = 15, edge_skip_px: int = 6
+) -> Box:
+    """원형 아이콘 오른쪽에 붙은 숫자(검정 글자)까지 bbox를 넓힌다.
+
+    아이콘 원의 안티앨리어싱 테두리가 ink_mask에서 1px짜리 잉크로 잡혀 band의
+    맨 앞(인덱스 0)에 걸린다(38~55쪽 실측 4건 전부 동일). 이걸 숫자의 시작으로
+    착각하면 바로 뒤 실제 간격(원과 번호 사이 20~23px, 위 주석 "22px 정도"와
+    일치)이 max_gap_px(15)보다 커서 진짜 번호에 닿기도 전에 확장을 멈춰버려
+    bbox가 원 하나 너비(~48px)에 머문다("확인체크 68/71/104"의 실제 저장
+    bbox는 100px 이상인데 자동분석은 48px에서 끊김). 원 테두리 잉크는 아이콘
+    바로 옆 몇 px 안에서 끝나고 진짜 번호는 그보다 훨씬 뒤에서 시작하므로,
+    맨 앞 edge_skip_px는 잉크가 있어도 "번호 시작"으로 치지 않는다.
+    """
     x_limit = min(page_w, icon_box.x1 + 80)  # 두 자리 숫자까지 넉넉히 볼 폭
     band = ink[icon_box.y0 : icon_box.y1, icon_box.x1 : x_limit]
     if band.size == 0:
         return icon_box
     col_has_ink = band.sum(axis=0) > 0
+    col_has_ink[:edge_skip_px] = False
 
     last_ink_x = None
     gap = 0
@@ -410,8 +423,16 @@ def detect_blocks(img: np.ndarray) -> list[Box]:
 # 사용자가 6번 전부 일관되게 지운 걸 확인(13·19·21·23·25·31쪽), 크롭해서 실제로
 # "Ⅰ-1"+세로 텍스트인 것도 눈으로 확인했다. "더 다양한 문제는 RPM..." 같은 다른
 # 헤더 장식은 실제 문제 내용과 한 블록에 뭉쳐 있어서 통째로 지우면 위험해 제외했다.
+#
+# Y_MAX=0.20은 "평면좌표"(4자) 소단원명 기준이었는데, 28쪽 diff(10~37쪽)에서
+# "직선의 방정식"(6자)인 35·37쪽은 이 문턱을 못 넘어 그대로 검출됐고 사람이
+# 수작업으로 지웠다(문제_number/text로 각각 분류됨). 크롭해서 세로 배지+
+# 위쪽 장식 스우시 꼬리까지 y1을 실측해보니 소단원명 길이에 따라 0.24~0.32까지
+# 늘어난다(예: 35쪽 0.24, 45쪽 0.24, 105·115쪽 0.32) — 반면 x0>0.90인 자리에는
+# 이 배지/스우시 말고 실제 콘텐츠가 나온 적이 없다(사람이 검토 완료한 10~37쪽
+# 저장본 전수 확인). 그래서 문턱을 여유 있게 0.35로 올린다.
 CORNER_BADGE_X_MIN = 0.90
-CORNER_BADGE_Y_MAX = 0.20
+CORNER_BADGE_Y_MAX = 0.35
 
 
 def _is_debris(box: Box, page_w: int, page_h: int, min_side_px: int = 7, min_area_px: int = 400) -> bool:
