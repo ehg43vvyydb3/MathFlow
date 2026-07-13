@@ -167,7 +167,9 @@ button {
   width: 28px;
   height: 28px;
   padding: 0;
-  border: 2px solid var(--border);
+  /* 미체크 상태에서도 빈 원이 또렷이 보여야 정확히 터치할 수 있다 —
+     아주 옅은 --border(#e0e0e0)는 흰 배경에서 거의 안 보인다. */
+  border: 2px solid #9ca3af;
   border-radius: 50%;
   background: var(--bg);
   color: #fff;
