@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -18,6 +18,16 @@ DATA_DIR = Path(__file__).parent / "data"
 CLIENT_DIR = Path(__file__).parent / "client"
 
 app = FastAPI(title="MathFlow Server")
+
+
+# 빌드 없는 순수 JS 뷰어라 app.js/style.css가 자주 바뀐다. no-cache를 붙여
+# 브라우저가 캐시를 쓰기 전에 항상 etag로 재검증하게 한다 — 안 바뀌었으면 304라
+# 트래픽 부담이 없고, 배포/rsync 직후 바로 반영된다("배포했는데 안 보임" 방지).
+@app.middleware("http")
+async def no_cache(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 def _book_dir(book_id: str) -> Path:
