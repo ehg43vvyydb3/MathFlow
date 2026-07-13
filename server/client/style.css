@@ -155,6 +155,38 @@ button {
   margin-bottom: 12px;
 }
 
+/* ---------- 문제 "풀었음" 토글 ---------- */
+.problem-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+.solved-toggle {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg);
+  color: #fff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.solved-toggle[aria-pressed="true"] {
+  border-color: #16a34a;
+  background: #16a34a;
+}
+/* 푼 문제는 번호 라벨을 살짝 흐리게 해 "완료" 느낌을 준다. */
+.problem-row.solved .rblock.role-label {
+  opacity: 0.5;
+}
+
 /* text 블록을 줄 단위로 쪼갠 경우 — 문단 간격은 그룹에, 줄 간격은 줄에 따로 준다
    (.rline도 .rblock 클래스를 같이 갖고 있어서, 명시적으로 덮어써야 24px가 안 먹는다). */
 .rblock-group {

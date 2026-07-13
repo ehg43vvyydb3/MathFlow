@@ -77,6 +77,27 @@ function toggleFavorite(page) {
   lsSetList("favorites", list);
 }
 
+// 문제 단위 "풀었음" 표시. key는 "페이지:문제순번" — 그 페이지 block_order 안에서
+// problem_number 블록이 몇 번째인지(1-indexed)로 잡는다. block.id는 세그멘테이션을
+// 다시 돌리면 드리프트하므로(그래서 diff는 IoU로 매칭한다) key로 쓰지 않는다. 순번
+// 방식도 그 페이지의 문제 개수/순서가 바뀌면 어긋날 수 있지만 id보다는 훨씬 안정적이다.
+function solvedKey(page, idx) {
+  return `${page}:${idx}`;
+}
+
+function isSolved(page, idx) {
+  return lsGetList("solved").includes(solvedKey(page, idx));
+}
+
+function toggleSolved(page, idx) {
+  const list = lsGetList("solved");
+  const key = solvedKey(page, idx);
+  const i = list.indexOf(key);
+  if (i >= 0) list.splice(i, 1);
+  else list.push(key);
+  lsSetList("solved", list);
+}
+
 function addBookmark(page) {
   const list = lsGetList("bookmarks");
   if (!list.some((b) => b.page === page)) {
@@ -167,9 +188,12 @@ function renderReflow(page) {
   const pageW = meta.width_px;
   const pageH = meta.height_px;
 
+  let problemIdx = 0;
   for (const blockId of meta.block_order) {
     const block = state.blocksById.get(blockId);
     if (!block) continue;
+    const isProblem = block.type === "problem_number";
+    if (isProblem) problemIdx += 1;
     const [x, y, w, h] = block.bbox;
     const role = (block.reflow && block.reflow.role) || "paragraph";
     const layout = ROLE_LAYOUT[role] || ROLE_LAYOUT.paragraph;
@@ -220,8 +244,42 @@ function renderReflow(page) {
     if (layout.mode === "full" && w * fullW < containerW) {
       div.style.margin = "0 auto 22px"; // 상한에 걸려 폭을 못 채운 경우 가운데 정렬
     }
-    el.reflowView.appendChild(div);
+
+    // 문제 번호에는 옆에 "풀었음" 토글을 붙여 한 줄로 감싼다.
+    if (isProblem) {
+      el.reflowView.appendChild(problemRow(div, page, problemIdx));
+    } else {
+      el.reflowView.appendChild(div);
+    }
   }
+}
+
+/** problem_number 크롭 옆에 "풀었음" 체크 토글을 붙인 한 줄을 만든다. */
+function problemRow(cropEl, page, idx) {
+  const row = document.createElement("div");
+  row.className = "problem-row";
+  cropEl.style.margin = "0"; // 간격은 row가 관리한다
+
+  const btn = document.createElement("button");
+  btn.className = "solved-toggle";
+  btn.type = "button";
+  btn.title = "풀었으면 체크";
+
+  const apply = (solved) => {
+    row.classList.toggle("solved", solved);
+    btn.setAttribute("aria-pressed", solved ? "true" : "false");
+    btn.textContent = solved ? "✓" : "";
+  };
+  apply(isSolved(page, idx));
+
+  btn.onclick = () => {
+    toggleSolved(page, idx);
+    apply(isSolved(page, idx));
+  };
+
+  row.appendChild(cropEl);
+  row.appendChild(btn);
+  return row;
 }
 
 /** 페이지 이미지에서 bbox(정규화 좌표) 영역만 CSS 배경으로 잘라낸 div를 만든다. */
