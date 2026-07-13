@@ -41,6 +41,10 @@ const state = {
   currentPage: 1,
   unit: UNITS[0], // 뷰어도 편집기처럼 단원 단위로 열어서 본다 — 페이지 이동은 이 단원 범위 안에서만
   viewMode: "reflow", // "image" | "reflow"
+  answers: null, // answers.json { count, page_w, page_h, page_map } — 답지 없는 책이면 null
+  answerPage: 1, // 답지 모달에서 현재 보고 있는 답지 페이지(1-indexed)
+  answerMode: "split", // "split"(2단 세로 분할) | "full"(통짜 페이지)
+  answerSplits: {}, // {답지페이지: 거터x} 사용자 조정 오버라이드 (init에서 localStorage 로드)
 };
 
 function unitForPage(page) {
@@ -129,6 +133,20 @@ function pageImageUrl(page) {
   return `${API}/book/${BOOK_ID}/page/${page}`;
 }
 
+function answerImageUrl(page) {
+  return `${API}/book/${BOOK_ID}/answer/${page}`;
+}
+
+// 현재 교재 페이지가 어느 답지 페이지에 대응하는지 (answers.json의 page_map).
+// 범위 밖이면 가장 가까운 끝값으로 clamp.
+function answerPageFor(bookPage) {
+  const map = state.answers.page_map;
+  if (map[bookPage] != null) return map[bookPage];
+  const keys = Object.keys(map).map(Number);
+  const lo = Math.min(...keys), hi = Math.max(...keys);
+  return map[Math.max(lo, Math.min(hi, bookPage))];
+}
+
 // ---------- DOM refs ----------
 
 const el = {
@@ -153,6 +171,19 @@ const el = {
   listBookmarks: document.getElementById("list-bookmarks"),
   listRecent: document.getElementById("list-recent"),
   content: document.getElementById("content"),
+  btnAnswer: document.getElementById("btn-answer"),
+  answerModal: document.getElementById("answer-modal"),
+  answerBody: document.getElementById("answer-body"),
+  answerCanvas: document.getElementById("answer-canvas"),
+  answerLabel: document.getElementById("answer-label"),
+  answerPrev: document.getElementById("answer-prev"),
+  answerNext: document.getElementById("answer-next"),
+  answerMode: document.getElementById("answer-mode"),
+  answerClose: document.getElementById("answer-close"),
+  answerReveal: document.getElementById("answer-reveal"),
+  answerAdjust: document.getElementById("answer-adjust"),
+  answerSplit: document.getElementById("answer-split"),
+  answerSplitReset: document.getElementById("answer-split-reset"),
 };
 
 // ---------- 렌더링 ----------
@@ -306,6 +337,7 @@ function renderCurrent() {
   el.btnFavorite.classList.toggle("on", isFavorite(page));
   el.btnPrev.disabled = page <= state.unit.start;
   el.btnNext.disabled = page >= state.unit.end;
+  el.btnAnswer.hidden = !state.answers; // 답지가 있는 책에서만 노출
 
   if (state.viewMode === "image") {
     renderPageImage(page);
@@ -417,6 +449,87 @@ function closeDrawer() {
   el.drawer.hidden = true;
 }
 
+// ---------- 답지 모달 ----------
+
+// 답지 페이지 이미지에서 한 열(정규화 x0~x1)만 잘라 컨테이너 폭에 맞춰 채운 div.
+// 답지가 2단 조판이라, 좌측단·우측단을 각각 이렇게 잘라 세로로 쌓으면 폰에서
+// 한 줄기로 읽힌다 (리플로우의 CSS 배경 크롭과 같은 기법, 새 이미지 파일 불필요).
+function answerColumn(url, x0, x1, aspect, containerW) {
+  const wn = x1 - x0;
+  const fullW = containerW / wn; // 페이지 전체가 이 배율로 그려질 때의 폭
+  const fullH = fullW * aspect;
+  const div = document.createElement("div");
+  div.className = "answer-col";
+  div.style.width = `${containerW}px`;
+  div.style.height = `${fullH}px`; // 열은 페이지 전체 높이
+  div.style.backgroundImage = `url(${url})`;
+  div.style.backgroundSize = `${fullW}px ${fullH}px`;
+  div.style.backgroundPosition = `${-x0 * fullW}px 0px`;
+  return div;
+}
+
+// 2단 분할선(거터) 위치. 답지가 스캔본이라 홀수(오른쪽)/짝수(왼쪽) 페이지마다
+// 거터 x가 다르고(측정: 0.462 vs 0.490) 페이지별 편차도 있어, 파리티 기본값을
+// 두되 페이지별로 슬라이더로 조정·저장(localStorage)할 수 있게 한다.
+const ANSWER_GUTTER_ODD = 0.462;
+const ANSWER_GUTTER_EVEN = 0.49;
+const ANSWER_MARGIN_L = 0.05;
+const ANSWER_MARGIN_R = 0.98;
+
+function answerGutter(page) {
+  const ov = state.answerSplits[page];
+  if (ov != null) return ov;
+  return page % 2 === 1 ? ANSWER_GUTTER_ODD : ANSWER_GUTTER_EVEN;
+}
+
+// 캔버스에 열 크롭을 그린다 (스크롤 위치는 건드리지 않음 — 슬라이더 조정 중에도 유지).
+function layoutAnswer() {
+  const n = state.answerPage;
+  const url = answerImageUrl(n);
+  const containerW = el.answerBody.clientWidth || 360;
+  const aspect = state.answers.page_h / state.answers.page_w;
+  el.answerCanvas.innerHTML = "";
+  if (state.answerMode === "split") {
+    const g = answerGutter(n);
+    el.answerCanvas.appendChild(answerColumn(url, ANSWER_MARGIN_L, g, aspect, containerW));
+    el.answerCanvas.appendChild(answerColumn(url, g, ANSWER_MARGIN_R, aspect, containerW));
+  } else {
+    el.answerCanvas.appendChild(answerColumn(url, 0, 1, aspect, containerW));
+  }
+}
+
+function renderAnswer() {
+  const n = state.answerPage;
+  el.answerLabel.textContent = `답지 ${n} / ${state.answers.count}쪽`;
+  el.answerPrev.disabled = n <= 1;
+  el.answerNext.disabled = n >= state.answers.count;
+  el.answerMode.textContent = state.answerMode === "split" ? "전체" : "2단";
+  el.answerAdjust.hidden = state.answerMode !== "split"; // 분할선 조정 바는 2단에서만
+  el.answerSplit.value = String(answerGutter(n));
+  layoutAnswer();
+  el.answerBody.scrollTop = 0;
+}
+
+function openAnswer() {
+  if (!state.answers) return;
+  state.answerPage = answerPageFor(state.currentPage);
+  el.answerBody.classList.add("spoiled"); // 열 때는 항상 가려진 상태로 시작
+  el.answerModal.hidden = false; // 먼저 보이게 해야 clientWidth가 잡힌다
+  renderAnswer();
+}
+
+function closeAnswer() {
+  el.answerModal.hidden = true;
+}
+
+// 이전/다음 답지쪽으로 이동 — 한 번 답을 봤으면(spoiled 해제) 그대로 유지한다.
+function stepAnswer(delta) {
+  const next = Math.max(1, Math.min(state.answers.count, state.answerPage + delta));
+  if (next === state.answerPage) return;
+  state.answerPage = next;
+  renderAnswer();
+}
+
 // ---------- 이벤트 ----------
 
 el.modeImage.onclick = () => setViewMode("image");
@@ -428,6 +541,16 @@ el.btnNext.onclick = () => goToPage(state.currentPage + 1);
 // 페이지 입력창 등에 포커스가 있을 때는 원래 하던 대로 커서 이동에 쓰이게
 // 두고 가로채지 않는다.
 window.addEventListener("keydown", (e) => {
+  // 답지 모달이 열려 있으면 좌우 화살표는 항상 답지쪽 이동만 한다. INPUT 가드보다
+  // 먼저 처리하고 preventDefault해서, 포커스가 분할선 슬라이더(range)에 있어도
+  // 화살표가 슬라이더를 움직이지 않게 한다 (슬라이더는 드래그로만 조정). Esc는 닫기.
+  if (!el.answerModal.hidden) {
+    if (e.key === "Escape") { e.preventDefault(); closeAnswer(); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); stepAnswer(-1); }
+    else if (e.key === "ArrowRight") { e.preventDefault(); stepAnswer(1); }
+    return;
+  }
+
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
 
@@ -454,6 +577,30 @@ el.btnBookmark.onclick = () => {
 el.btnMenu.onclick = openDrawer;
 el.btnCloseDrawer.onclick = closeDrawer;
 el.drawer.querySelector(".drawer-backdrop").onclick = closeDrawer;
+
+el.btnAnswer.onclick = openAnswer;
+el.answerClose.onclick = closeAnswer;
+el.answerModal.querySelector(".answer-backdrop").onclick = closeAnswer;
+el.answerReveal.onclick = () => el.answerBody.classList.remove("spoiled");
+el.answerPrev.onclick = () => stepAnswer(-1);
+el.answerNext.onclick = () => stepAnswer(1);
+el.answerMode.onclick = () => {
+  state.answerMode = state.answerMode === "split" ? "full" : "split";
+  renderAnswer();
+};
+// 분할선 조정: 드래그 중엔 즉시 재배치(스크롤 유지), 놓을 때 localStorage에 저장.
+el.answerSplit.oninput = () => {
+  state.answerSplits[state.answerPage] = parseFloat(el.answerSplit.value);
+  layoutAnswer();
+};
+el.answerSplit.onchange = () => {
+  localStorage.setItem(lsKey("answerSplits"), JSON.stringify(state.answerSplits));
+};
+el.answerSplitReset.onclick = () => {
+  delete state.answerSplits[state.answerPage]; // 파리티 기본값으로 되돌림
+  localStorage.setItem(lsKey("answerSplits"), JSON.stringify(state.answerSplits));
+  renderAnswer();
+};
 el.unitSelect.onchange = () => {
   const unit = UNITS.find((u) => u.id === el.unitSelect.value);
   if (unit) {
@@ -474,6 +621,18 @@ async function init() {
   state.book = book;
   for (const p of pages.pages) state.pagesByNumber.set(p.number, p);
   for (const b of blocks.blocks) state.blocksById.set(b.id, b);
+
+  // 답지는 선택 사항 — 없는 책이면 404라 답지 기능만 조용히 꺼진다.
+  try {
+    state.answers = await fetchJSON(`${API}/book/${BOOK_ID}/answers`);
+  } catch {
+    state.answers = null;
+  }
+  try {
+    state.answerSplits = JSON.parse(localStorage.getItem(lsKey("answerSplits"))) || {};
+  } catch {
+    state.answerSplits = {};
+  }
 
   for (const unit of UNITS) {
     const opt = document.createElement("option");
@@ -497,7 +656,8 @@ init().catch((err) => {
   console.error(err);
 });
 
-// 리플로우 모드에서 화면 회전/리사이즈 시 다시 계산
+// 화면 회전/리사이즈 시 다시 계산 (폭 기반 배율이라 필수)
 window.addEventListener("resize", () => {
-  if (state.viewMode === "reflow") renderReflow(state.currentPage);
+  if (!el.answerModal.hidden) renderAnswer();
+  else if (state.viewMode === "reflow") renderReflow(state.currentPage);
 });

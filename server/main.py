@@ -85,6 +85,23 @@ def get_page_image(book_id: str, page_number: int) -> FileResponse:
     raise HTTPException(status_code=404, detail=f"page {page_number} image not found")
 
 
+# 답지(정답 및 풀이): 교재페이지→답지페이지 매핑(answers.json)과 답지 페이지 이미지.
+# 답지가 없는 책은 answers.json이 없어 404 — 뷰어는 그 경우 "답 보기"를 숨긴다.
+@app.get("/book/{book_id}/answers")
+def get_answers(book_id: str) -> dict:
+    return _load_json(_book_dir(book_id) / "answers.json")
+
+
+@app.get("/book/{book_id}/answer/{page_number}")
+def get_answer_image(book_id: str, page_number: int) -> FileResponse:
+    book_dir = _book_dir(book_id)
+    for ext in ("webp", "png", "jpg"):
+        candidate = book_dir / "answers" / f"{page_number:04d}.{ext}"
+        if candidate.exists():
+            return FileResponse(candidate)
+    raise HTTPException(status_code=404, detail=f"answer page {page_number} image not found")
+
+
 # 빌드 없는 순수 HTML/JS 뷰어. API 라우트 뒤에 등록해야 이 마운트가
 # "/book/..." 같은 API 경로를 가로채지 않는다.
 app.mount("/viewer", StaticFiles(directory=CLIENT_DIR, html=True), name="viewer")

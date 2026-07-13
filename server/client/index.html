@@ -34,7 +34,33 @@
   <input id="page-input" type="number" inputmode="numeric" />
   <span id="page-total"></span>
   <button id="btn-next" class="nav-btn">▶</button>
+  <button id="btn-answer" class="answer-btn" hidden>답 보기</button>
 </nav>
+
+<div id="answer-modal" class="answer-modal" hidden>
+  <div class="answer-backdrop"></div>
+  <div class="answer-panel">
+    <div class="answer-header">
+      <button id="answer-prev" class="nav-btn" aria-label="이전 답지쪽">◀</button>
+      <span id="answer-label" class="answer-label">답지</span>
+      <button id="answer-next" class="nav-btn" aria-label="다음 답지쪽">▶</button>
+      <button id="answer-mode" class="answer-mode-btn" aria-label="보기 방식">전체</button>
+      <button id="answer-close" class="icon-btn" aria-label="닫기">✕</button>
+    </div>
+    <div id="answer-adjust" class="answer-adjust">
+      <span class="adjust-label">세로 분할선</span>
+      <input id="answer-split" type="range" min="0.40" max="0.56" step="0.004" />
+      <button id="answer-split-reset" class="adjust-reset" aria-label="기본값으로">⟲</button>
+    </div>
+    <div id="answer-body" class="answer-body spoiled">
+      <div id="answer-canvas" class="answer-canvas"></div>
+      <div id="answer-spoiler" class="answer-spoiler">
+        <p>정답·해설이 가려져 있어요</p>
+        <button id="answer-reveal" class="reveal-btn">탭해서 답 보기</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <div id="drawer" class="drawer" hidden>
   <div class="drawer-backdrop"></div>
