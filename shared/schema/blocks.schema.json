@@ -95,6 +95,10 @@
               "type": "boolean",
               "description": "이 블록 앞에서 시각적 구분(여백/개행)을 줄지",
               "default": false
+            },
+            "attach_to": {
+              "type": "string",
+              "description": "(선택) 이 블록(주로 figure)을 리플로우에서 지정한 블록 바로 뒤에 강제 배치. 값은 같은 페이지 내 대상 block.id. 편집기에서 '그림 연결'로 지정."
             }
           }
         },

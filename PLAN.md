@@ -120,6 +120,16 @@ server/            FastAPI 서버 소스 (파이의 ~/apps/mathflow-server 로 r
       localStorage에 `"페이지:문제순번"` key로 저장(block.id 드리프트 회피).
       기기별·서버 동기화 없음. 답지 연동은 별도(답지가 별도 파일이라 이미지 전용
       자산 + 단원→답지페이지 매핑으로 phase 2 예정) (2026-07-13)
+- [x] 답지(정답·해설) 보기: 답지 PDF(별도 파일)를 `build_answers.py`가 webp+매핑
+      (`answers.json`: "본책 X~Y쪽" 헤더 OCR→교재페이지→답지페이지)으로 빌드,
+      서버가 `/book/{id}/answers`·`/answer/{n}` 서빙, 뷰어 하단 "답 보기" →
+      스포일러 모달. 답지 2단 조판을 좌/우 세로 분할해 폰에서 읽기 좋게(분할선은
+      홀·짝 기본값 + 페이지별 슬라이더 조정, localStorage). 편집기 "전송"에도
+      answers 포함 (2026-07-14)
+- [x] 편집기 figure 강제 연결: figure 선택→"그림 연결"(Ctrl+L)/우클릭→지정 모드,
+      text/formula 클릭으로 대상 지정(중심-중심 연결선 표시). `reflow.attach_to`에
+      저장하고 `_save`가 그림을 대상 뒤로 재배치(`_apply_attachments`). 그림이
+      문제와 멀리 떨어져 리플로우가 어긋나던 경우 대응 (2026-07-14)
 - [ ] "Ⅰ-2. 직선의 방정식" 단원(33~65쪽) 분석·보정 시작
 - [ ] problem 그룹핑 (문제번호 ↔ 소속 블록 연결, pages.json의 problems 채우기)
 - [ ] 서버: SQLite로 북마크·즐겨찾기·학습기록 (지금은 정적 파일 서빙만)
