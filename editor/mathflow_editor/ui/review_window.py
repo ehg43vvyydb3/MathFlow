@@ -380,9 +380,9 @@ class ReviewWindow(QMainWindow):
         self.view.on_attach_cancel = self._cancel_attach_by_user
         self.setCentralWidget(self.view)
 
-        # 블록 연결 상태: 지정 모드 소스 블록, id→BlockItem 맵, 연결선 아이템들
+        # 블록 연결 상태: 지정 모드 소스 블록, 연결선 아이템들
+        # (id→BlockItem 맵은 캐시하지 않고 씬에서 그때그때 만든다 — _block_item_map)
         self._attach_source: BlockItem | None = None
-        self._block_items: dict[str, BlockItem] = {}
         self._attach_lines: list[QGraphicsLineItem] = []
 
         self._build_menus()
@@ -812,7 +812,6 @@ class ReviewWindow(QMainWindow):
 
         self._cancel_attach()  # 페이지가 바뀌면 진행 중이던 지정 모드는 취소
         self.scene.clear()
-        self._block_items = {}
         self._attach_lines = []
         pix_item = QGraphicsPixmapItem(_cv_to_qpixmap(img))
         pix_item.setZValue(-1)
@@ -820,12 +819,7 @@ class ReviewWindow(QMainWindow):
         self.scene.setSceneRect(0, 0, w, h)
 
         for e in self._get_page_entries(page_number):
-            item = BlockItem(e["block"], e["needs_review"], w, h)
-            item.on_dirty = self._mark_dirty
-            item.on_request_attach = self._start_attach
-            item.on_request_detach = self._detach_item
-            self.scene.addItem(item)
-            self._block_items[e["block"]["id"]] = item
+            self.scene.addItem(self._make_block_item(e["block"], e["needs_review"]))
 
         self._redraw_attachment_lines()  # 기존 연결을 중심-중심 선으로 표시
 
@@ -1041,14 +1035,48 @@ class ReviewWindow(QMainWindow):
         self._redraw_attachment_lines()
         return True
 
+    def _make_block_item(self, block: dict, needs_review: bool) -> BlockItem:
+        """BlockItem을 만들고 콜백을 붙인다. 병합/새로 그린 블록도 반드시 이걸 거쳐야
+        우클릭 '블록 연결'이 동작한다 (예전엔 on_dirty만 붙여서 새 블록은 메뉴가 먹통이었다)."""
+        item = BlockItem(block, needs_review, self._page_w, self._page_h)
+        item.on_dirty = self._mark_dirty
+        item.on_request_attach = self._start_attach
+        item.on_request_detach = self._detach_item
+        return item
+
+    def _block_item_map(self) -> dict[str, BlockItem]:
+        """id→BlockItem. 씬에서 그때그때 만든다 — 캐시해두면 병합/삭제/새 블록 뒤에
+        낡아서(새 블록이 없고 사라진 블록이 남아) 연결선이 안 그려진다."""
+        return {it.block["id"]: it for it in self.scene.items() if isinstance(it, BlockItem)}
+
+    def _repoint_attachments(self, old_ids: set[str], new_id: str | None) -> None:
+        """old_ids를 가리키던 attach_to를 new_id로 옮긴다(new_id가 None이면 연결 해제).
+
+        대상 블록이 병합되면 그 후속(병합 결과)으로 연결을 넘기고, 삭제되면 연결을
+        푼다 — 안 그러면 attach_to가 죽은 id를 가리킨 채 남는다.
+        """
+        items = self._block_item_map()
+        for e in self.pages_blocks[self.current_page]:
+            reflow = e["block"].get("reflow") or {}
+            if reflow.get("attach_to") not in old_ids:
+                continue
+            if new_id:
+                reflow["attach_to"] = new_id
+            else:
+                reflow.pop("attach_to", None)
+            it = items.get(e["block"]["id"])
+            if it is not None:
+                it.apply_style()  # 연결 표시(굵은 점선-대시) 갱신
+
     def _redraw_attachment_lines(self) -> None:
-        """attach_to로 연결된 (figure→대상) 쌍마다 중심-중심 선을 다시 그린다."""
+        """attach_to로 연결된 (소스→대상) 쌍마다 중심-중심 선을 다시 그린다."""
         for ln in self._attach_lines:
             self.scene.removeItem(ln)
         self._attach_lines = []
-        for item in self._block_items.values():
+        items = self._block_item_map()
+        for item in items.values():
             tid = (item.block.get("reflow") or {}).get("attach_to")
-            target = self._block_items.get(tid) if tid else None
+            target = items.get(tid) if tid else None
             if target is None:
                 continue
             ax, ay = _block_center(item.block, item.page_w, item.page_h)
@@ -1067,6 +1095,7 @@ class ReviewWindow(QMainWindow):
         items = self._selected_items()
         if len(items) < 2:
             return
+        self._cancel_attach()  # 지정 모드 중이면 소스가 사라질 수 있으니 취소
         blocks = [it.block for it in items]
         x0 = min(b["bbox"][0] for b in blocks)
         y0 = min(b["bbox"][1] for b in blocks)
@@ -1075,6 +1104,7 @@ class ReviewWindow(QMainWindow):
         biggest = max(blocks, key=lambda b: b["bbox"][2] * b["bbox"][3])
 
         entries = self.pages_blocks[self.current_page]
+        merged_ids = {b["id"] for b in blocks}
         for it in items:
             entries.remove(next(e for e in entries if e["block"] is it.block))
             self.scene.removeItem(it)
@@ -1088,20 +1118,28 @@ class ReviewWindow(QMainWindow):
             "reflow": {"role": pipeline.ROLE_BY_TYPE.get(biggest["type"], "paragraph")},
         }
         entries.append({"block": new_block, "needs_review": False})
-        item = BlockItem(new_block, False, self._page_w, self._page_h)
-        item.on_dirty = self._mark_dirty
-        self.scene.addItem(item)
+        self.scene.addItem(self._make_block_item(new_block, False))
+        # 병합된 블록을 가리키던 연결은 병합 결과로 넘긴다 (죽은 id로 남지 않게)
+        self._repoint_attachments(merged_ids, new_block["id"])
+        self._redraw_attachment_lines()
         self._mark_dirty()
         self._update_status()
 
     def _delete_selected(self) -> None:
         entries = self.pages_blocks[self.current_page]
         items = self._selected_items()
+        if not items:
+            self._update_status()
+            return
+        self._cancel_attach()  # 지정 모드 중이면 소스가 사라질 수 있으니 취소
+        deleted_ids = {it.block["id"] for it in items}
         for it in items:
             entries.remove(next(e for e in entries if e["block"] is it.block))
             self.scene.removeItem(it)
-        if items:
-            self._mark_dirty()
+        # 삭제된 블록을 가리키던 연결은 풀어준다 (죽은 id로 남지 않게)
+        self._repoint_attachments(deleted_ids, None)
+        self._redraw_attachment_lines()
+        self._mark_dirty()
         self._update_status()
 
     def _toggle_add_mode(self, checked: bool) -> None:
@@ -1122,9 +1160,7 @@ class ReviewWindow(QMainWindow):
             "reflow": {"role": "paragraph"},
         }
         entries.append({"block": new_block, "needs_review": False})
-        item = BlockItem(new_block, False, w, h)
-        item.on_dirty = self._mark_dirty
-        self.scene.addItem(item)
+        self.scene.addItem(self._make_block_item(new_block, False))
         self.add_action.setChecked(False)
         self._mark_dirty()
         self._update_status()
