@@ -180,13 +180,23 @@ button {
   align-items: center;
   justify-content: center;
 }
-.solved-toggle[aria-pressed="true"] {
+/* 완료: 초록 체크 / 중요: 주황 별 (미완료는 빈 원) */
+.solved-toggle[data-mark="done"] {
   border-color: #16a34a;
   background: #16a34a;
 }
-/* 푼 문제는 번호 라벨을 살짝 흐리게 해 "완료" 느낌을 준다. */
-.problem-row.solved .rblock.role-label {
+.solved-toggle[data-mark="important"] {
+  border-color: #f59e0b;
+  background: #f59e0b;
+  font-size: 14px;
+}
+/* 푼 문제는 번호 라벨을 흐리게 해 "넘어감" 느낌을, 중요 문제는 테두리로 눈에 띄게. */
+.problem-row.done .rblock.role-label {
   opacity: 0.5;
+}
+.problem-row.important .rblock.role-label {
+  outline: 2px solid #f59e0b;
+  outline-offset: 1px;
 }
 
 /* text 블록을 줄 단위로 쪼갠 경우 — 문단 간격은 그룹에, 줄 간격은 줄에 따로 준다

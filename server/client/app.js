@@ -45,6 +45,7 @@ const state = {
   answerPage: 1, // 답지 모달에서 현재 보고 있는 답지 페이지(1-indexed)
   answerMode: "split", // "split"(2단 세로 분할) | "full"(통짜 페이지)
   answerSplits: {}, // {답지페이지: 거터x} 사용자 조정 오버라이드 (init에서 localStorage 로드)
+  marks: {}, // {"페이지:문제순번": "done"|"important"} (init에서 localStorage 로드)
 };
 
 function unitForPage(page) {
@@ -81,25 +82,53 @@ function toggleFavorite(page) {
   lsSetList("favorites", list);
 }
 
-// 문제 단위 "풀었음" 표시. key는 "페이지:문제순번" — 그 페이지 block_order 안에서
-// problem_number 블록이 몇 번째인지(1-indexed)로 잡는다. block.id는 세그멘테이션을
-// 다시 돌리면 드리프트하므로(그래서 diff는 IoU로 매칭한다) key로 쓰지 않는다. 순번
-// 방식도 그 페이지의 문제 개수/순서가 바뀌면 어긋날 수 있지만 id보다는 훨씬 안정적이다.
-function solvedKey(page, idx) {
+// 문제 단위 표시: 미완료(없음) → 완료(done) → 중요(important) 3단계 순환.
+// key는 "페이지:문제순번" — 그 페이지 block_order 안에서 problem_number 블록이
+// 몇 번째인지(1-indexed)로 잡는다. block.id는 세그멘테이션을 다시 돌리면
+// 드리프트하므로(그래서 diff는 IoU로 매칭한다) key로 쓰지 않는다. 순번 방식도 그
+// 페이지의 문제 개수/순서가 바뀌면 어긋날 수 있지만 id보다는 훨씬 안정적이다.
+function markKey(page, idx) {
   return `${page}:${idx}`;
 }
 
-function isSolved(page, idx) {
-  return lsGetList("solved").includes(solvedKey(page, idx));
+// 저장 형식은 {key: "done"|"important"}. 2단계였던 예전 버전은 ["42:2", ...] 배열로
+// 저장했으므로, 배열이면 전부 "done"으로 마이그레이션해 기존 체크를 살린다.
+function loadMarks() {
+  let raw = null;
+  try {
+    raw = JSON.parse(localStorage.getItem(lsKey("solved")));
+  } catch {
+    raw = null;
+  }
+  if (Array.isArray(raw)) {
+    const migrated = {};
+    for (const k of raw) migrated[k] = "done";
+    return migrated;
+  }
+  return raw && typeof raw === "object" ? raw : {};
 }
 
-function toggleSolved(page, idx) {
-  const list = lsGetList("solved");
-  const key = solvedKey(page, idx);
-  const i = list.indexOf(key);
-  if (i >= 0) list.splice(i, 1);
-  else list.push(key);
-  lsSetList("solved", list);
+function saveMarks() {
+  localStorage.setItem(lsKey("solved"), JSON.stringify(state.marks));
+}
+
+function markOf(page, idx) {
+  return state.marks[markKey(page, idx)] || null;
+}
+
+function nextMark(cur) {
+  if (!cur) return "done";
+  if (cur === "done") return "important";
+  return null; // 중요 → 미완료
+}
+
+function cycleMark(page, idx) {
+  const key = markKey(page, idx);
+  const next = nextMark(state.marks[key]);
+  if (next) state.marks[key] = next;
+  else delete state.marks[key];
+  saveMarks();
+  return next;
 }
 
 function addBookmark(page) {
@@ -285,7 +314,7 @@ function renderReflow(page) {
   }
 }
 
-/** problem_number 크롭 옆에 "풀었음" 체크 토글을 붙인 한 줄을 만든다. */
+/** problem_number 크롭 옆에 3단계(미완료/완료/중요) 표시 토글을 붙인 한 줄. */
 function problemRow(cropEl, page, idx) {
   const row = document.createElement("div");
   row.className = "problem-row";
@@ -294,19 +323,18 @@ function problemRow(cropEl, page, idx) {
   const btn = document.createElement("button");
   btn.className = "solved-toggle";
   btn.type = "button";
-  btn.title = "풀었으면 체크";
+  btn.title = "탭할 때마다: 미완료 → 완료 → 중요";
 
-  const apply = (solved) => {
-    row.classList.toggle("solved", solved);
-    btn.setAttribute("aria-pressed", solved ? "true" : "false");
-    btn.textContent = solved ? "✓" : "";
+  const apply = (mark) => {
+    row.classList.toggle("done", mark === "done");
+    row.classList.toggle("important", mark === "important");
+    btn.setAttribute("data-mark", mark || "");
+    btn.textContent = mark === "done" ? "✓" : mark === "important" ? "★" : "";
+    btn.setAttribute("aria-label", mark === "done" ? "완료" : mark === "important" ? "중요" : "미완료");
   };
-  apply(isSolved(page, idx));
+  apply(markOf(page, idx));
 
-  btn.onclick = () => {
-    toggleSolved(page, idx);
-    apply(isSolved(page, idx));
-  };
+  btn.onclick = () => apply(cycleMark(page, idx));
 
   row.appendChild(cropEl);
   row.appendChild(btn);
@@ -633,6 +661,7 @@ async function init() {
   } catch {
     state.answerSplits = {};
   }
+  state.marks = loadMarks(); // 예전 배열 형식이면 여기서 done으로 마이그레이션
 
   for (const unit of UNITS) {
     const opt = document.createElement("option");
