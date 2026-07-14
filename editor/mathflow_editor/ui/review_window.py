@@ -88,6 +88,11 @@ def _reading_order_key(block: dict) -> tuple[int, int, int]:
     return (column, y_bucket, type_priority)
 
 
+# 위치 연결(attach)에서 "옮길 수 있는" 소스 블록 타입. problem_number는 문제 경계라
+# 제자리에 둔다. 대상(어디 뒤에 붙일지)은 자기 자신만 아니면 어떤 블록이든 된다.
+_ATTACH_SOURCE_TYPES = {"text", "figure", "formula", "table"}
+
+
 def _block_center(block: dict, page_w: int, page_h: int) -> tuple[float, float]:
     x, y, w, h = block["bbox"]
     return ((x + w / 2) * page_w, (y + h / 2) * page_h)
@@ -167,7 +172,7 @@ class BlockItem(QGraphicsRectItem):
         self.page_h = page_h
         self._resize_edges: str = ""  # 예: "L", "TR", "B"
         self.on_dirty = None  # 리사이즈로 bbox가 바뀔 때 호출할 콜백 (ReviewWindow가 채워줌)
-        # 그림 연결(지정 모드 진입/해제) 콜백 — ReviewWindow가 채워준다.
+        # 블록 연결(지정 모드 진입/해제) 콜백 — ReviewWindow가 채워준다.
         self.on_request_attach = None
         self.on_request_detach = None
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
@@ -175,11 +180,11 @@ class BlockItem(QGraphicsRectItem):
         self.apply_style()
 
     def contextMenuEvent(self, event) -> None:
-        """figure를 우클릭하면 '그림 연결'(지정 모드 진입)/'연결 해제' 메뉴."""
-        if self.block["type"] != "figure":
+        """옮길 수 있는 블록을 우클릭하면 '블록 연결'(지정 모드 진입)/'연결 해제' 메뉴."""
+        if self.block["type"] not in _ATTACH_SOURCE_TYPES:
             return
         menu = QMenu()
-        act_attach = menu.addAction("그림 연결")
+        act_attach = menu.addAction("블록 연결")
         act_detach = None
         if (self.block.get("reflow") or {}).get("attach_to"):
             act_detach = menu.addAction("연결 해제")
@@ -194,7 +199,7 @@ class BlockItem(QGraphicsRectItem):
         pen = QPen(color, 2)
         if self.needs_review:
             pen.setStyle(Qt.PenStyle.DashLine)
-        # "그림 연결"로 대상 문제에 묶인 블록은 굵은 점선-대시로 눈에 띄게 표시.
+        # "블록 연결"로 대상에 묶인 블록은 굵은 점선-대시로 눈에 띄게 표시.
         if (self.block.get("reflow") or {}).get("attach_to"):
             pen.setWidth(3)
             pen.setStyle(Qt.PenStyle.DashDotLine)
@@ -290,7 +295,7 @@ class PageView(QGraphicsView):
         super().__init__(scene)
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.add_mode = False
-        self.attach_mode = False  # 그림 연결 대상 지정 모드
+        self.attach_mode = False  # 블록 연결 대상 지정 모드
         self.on_new_block = None
         self.on_attach_click = None  # 지정 모드에서 블록 클릭 시 호출 (BlockItem 또는 None)
         self.on_attach_cancel = None  # Esc로 지정 모드 취소
@@ -375,8 +380,8 @@ class ReviewWindow(QMainWindow):
         self.view.on_attach_cancel = self._cancel_attach_by_user
         self.setCentralWidget(self.view)
 
-        # 그림 연결 상태: 지정 모드 대상 figure, id→BlockItem 맵, 연결선 아이템들
-        self._attach_figure: BlockItem | None = None
+        # 블록 연결 상태: 지정 모드 소스 블록, id→BlockItem 맵, 연결선 아이템들
+        self._attach_source: BlockItem | None = None
         self._block_items: dict[str, BlockItem] = {}
         self._attach_lines: list[QGraphicsLineItem] = []
 
@@ -419,7 +424,7 @@ class ReviewWindow(QMainWindow):
         act_delete.setShortcut(Qt.Key.Key_Delete)
         act_delete.triggered.connect(self._delete_selected)
 
-        act_attach = toolbar.addAction("그림 연결")
+        act_attach = toolbar.addAction("블록 연결")
         act_attach.setShortcut("Ctrl+L")
         act_attach.triggered.connect(self._start_attach_selected)
         act_detach = toolbar.addAction("연결 해제")
@@ -818,7 +823,7 @@ class ReviewWindow(QMainWindow):
             item = BlockItem(e["block"], e["needs_review"], w, h)
             item.on_dirty = self._mark_dirty
             item.on_request_attach = self._start_attach
-            item.on_request_detach = self._detach_figure_item
+            item.on_request_detach = self._detach_item
             self.scene.addItem(item)
             self._block_items[e["block"]["id"]] = item
 
@@ -968,54 +973,51 @@ class ReviewWindow(QMainWindow):
                 best = max(best, int(m.group(1)))
         return best + 1
 
-    # ---------- 그림 연결 (지정 모드) ----------
+    # ---------- 블록 연결 (지정 모드) ----------
 
     def _start_attach_selected(self) -> None:
-        """툴바 '그림 연결': 선택된 figure 하나로 지정 모드에 들어간다."""
-        figs = [it for it in self._selected_items() if it.block["type"] == "figure"]
-        if len(figs) != 1:
-            self.status_label.setText("그림 연결: figure 하나를 선택한 뒤 눌러 지정 모드로 들어가세요")
+        """툴바 '블록 연결': 선택된 소스 블록 하나로 지정 모드에 들어간다."""
+        srcs = [it for it in self._selected_items() if it.block["type"] in _ATTACH_SOURCE_TYPES]
+        if len(srcs) != 1:
+            self.status_label.setText("블록 연결: 옮길 블록(figure/text/formula) 하나를 선택한 뒤 누르세요")
             return
-        self._start_attach(figs[0])
+        self._start_attach(srcs[0])
 
-    def _start_attach(self, fig_item: BlockItem) -> None:
-        """지정 모드 진입 — 이후 클릭한 text/formula를 이 figure의 연결 대상으로 삼는다."""
-        self._attach_figure = fig_item
+    def _start_attach(self, src_item: BlockItem) -> None:
+        """지정 모드 진입 — 이후 클릭한 블록을 이 소스의 연결 대상으로 삼는다."""
+        self._attach_source = src_item
         self.view.attach_mode = True
         self.view.setCursor(Qt.CursorShape.CrossCursor)
         self.view.setFocus()  # Esc 취소가 뷰에 전달되도록 포커스를 준다
-        self.status_label.setText("연결할 대상(text 또는 formula)을 클릭하세요 · Esc 취소")
+        self.status_label.setText("이 블록을 어디 뒤에 붙일지, 대상 블록을 클릭하세요 · Esc 취소")
 
     def _cancel_attach(self) -> None:
-        if self._attach_figure is None and not self.view.attach_mode:
+        if self._attach_source is None and not self.view.attach_mode:
             return
-        self._attach_figure = None
+        self._attach_source = None
         self.view.attach_mode = False
         self.view.unsetCursor()
 
     def _cancel_attach_by_user(self) -> None:
         """Esc로 지정 모드를 취소 — 상태표시도 원래대로 되돌린다."""
-        active = self._attach_figure is not None
+        active = self._attach_source is not None
         self._cancel_attach()
         if active:
             self._update_status()
 
     def _on_attach_click(self, target_item: BlockItem | None) -> None:
-        """지정 모드에서 블록을 클릭했을 때 — text/formula면 연결 확정."""
-        fig = self._attach_figure
-        if fig is None:
+        """지정 모드에서 대상 블록을 클릭했을 때 연결 확정."""
+        src = self._attach_source
+        if src is None:
             return
-        if target_item is None or target_item is fig:
+        if target_item is None or target_item is src:
             return  # 빈 곳/자기 자신은 무시하고 계속 대기
-        if target_item.block["type"] not in ("text", "formula"):
-            self.status_label.setText("대상은 text 또는 formula만 가능합니다 · Esc 취소")
-            return
-        fig.block.setdefault("reflow", {})["attach_to"] = target_item.block["id"]
-        fig.apply_style()
+        src.block.setdefault("reflow", {})["attach_to"] = target_item.block["id"]
+        src.apply_style()
         self._mark_dirty()
         self._cancel_attach()
         self._redraw_attachment_lines()
-        self.status_label.setText(f"그림을 {target_item.block['id']} 뒤에 연결했습니다 (저장 후 반영)")
+        self.status_label.setText(f"블록을 {target_item.block['id']} 뒤에 연결했습니다 (저장 후 반영)")
 
     def _detach_selected(self) -> None:
         """툴바 '연결 해제': 선택된 블록들의 연결을 푼다."""
@@ -1023,12 +1025,12 @@ class ReviewWindow(QMainWindow):
         # 멈춰서 여러 개 선택 시 나머지가 해제 안 되는 버그가 된다.
         cleared = [self._clear_attach(it) for it in self._selected_items()]
         if any(cleared):
-            self.status_label.setText("그림 연결을 해제했습니다 (저장 후 반영)")
+            self.status_label.setText("연결을 해제했습니다 (저장 후 반영)")
 
-    def _detach_figure_item(self, fig_item: BlockItem) -> None:
+    def _detach_item(self, fig_item: BlockItem) -> None:
         """우클릭 메뉴 '연결 해제'."""
         if self._clear_attach(fig_item):
-            self.status_label.setText("그림 연결을 해제했습니다 (저장 후 반영)")
+            self.status_label.setText("연결을 해제했습니다 (저장 후 반영)")
 
     def _clear_attach(self, item: BlockItem) -> bool:
         reflow = item.block.get("reflow") or {}
@@ -1149,7 +1151,7 @@ class ReviewWindow(QMainWindow):
         # 위치(컬럼 → 위에서 아래) 기준으로 다시 정렬한다.
         for p in self.pages_blocks:
             self.pages_blocks[p].sort(key=lambda e: _reading_order_key(e["block"]))
-            # 위치 기준 정렬 뒤, "그림 연결"로 지정된 figure를 대상 문제 바로 뒤로 옮긴다.
+            # 위치 기준 정렬 뒤, "블록 연결"로 지정된 블록을 대상 바로 뒤로 옮긴다.
             self.pages_blocks[p] = _apply_attachments(self.pages_blocks[p])
             for i, e in enumerate(self.pages_blocks[p]):
                 e["block"]["order"] = i

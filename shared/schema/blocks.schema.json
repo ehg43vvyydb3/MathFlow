@@ -98,7 +98,7 @@
             },
             "attach_to": {
               "type": "string",
-              "description": "(선택) 이 블록(주로 figure)을 리플로우에서 지정한 블록 바로 뒤에 강제 배치. 값은 같은 페이지 내 대상 block.id. 편집기에서 '그림 연결'로 지정."
+              "description": "(선택) 이 블록(figure/text/formula 등)을 리플로우에서 지정한 블록 바로 뒤에 강제 배치. 값은 같은 페이지 내 대상 block.id. 편집기 '블록 연결'로 지정."
             }
           }
         },
