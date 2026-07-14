@@ -28,6 +28,7 @@ const ROLE_LAYOUT = {
   equation: { mode: "full" },
   figure: { mode: "full" },
   table: { mode: "full" },
+  page_number: { mode: "auto", targetHeightPx: 22 },
 };
 
 // 페이지는 150dpi로 렌더링돼 있다. 이보다 훨씬 크게 늘리면 원본에 없는

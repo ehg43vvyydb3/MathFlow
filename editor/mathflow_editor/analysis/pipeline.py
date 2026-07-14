@@ -22,6 +22,7 @@ ROLE_BY_TYPE = {
     "formula": "equation",
     "table": "table",
     "problem_number": "label",
+    "page_number": "page_number",
 }
 
 # 뷰어의 리플로우 컨테이너는 폰 화면 폭에 맞춰지고(좌우 패딩 14px씩 제외),

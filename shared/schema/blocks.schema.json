@@ -41,7 +41,7 @@
         "type": {
           "type": "string",
           "description": "블록 종류",
-          "enum": ["text", "formula", "figure", "table", "problem_number"]
+          "enum": ["text", "formula", "figure", "table", "problem_number", "page_number"]
         },
         "bbox": {
           "type": "array",
@@ -73,7 +73,7 @@
             "role": {
               "type": "string",
               "description": "리플로우에서의 역할",
-              "enum": ["paragraph", "equation", "figure", "table", "label"]
+              "enum": ["paragraph", "equation", "figure", "table", "label", "page_number"]
             },
             "full_width": {
               "type": "boolean",

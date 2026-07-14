@@ -15,12 +15,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PySide6.QtCore import QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QImage, QPen, QPixmap
+from PySide6.QtGui import QAction, QBrush, QColor, QImage, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFrame,
     QGraphicsItem,
     QGraphicsLineItem,
     QGraphicsPixmapItem,
@@ -35,14 +36,16 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressDialog,
     QSpinBox,
-    QToolBar,
+    QToolButton,
     QVBoxLayout,
+    QWidget,
 )
 
 from .. import units as units_module
 from ..analysis import pipeline, review, segment
 from ..analysis.vlm_client import BLOCK_TYPES, OllamaBackend
 from ..io import export, metadata
+from .flow_layout import FlowLayout
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -55,6 +58,7 @@ _TYPE_QCOLOR = {
     "formula": QColor(30, 30, 220),
     "table": QColor(170, 0, 170),
     "problem_number": QColor(0, 150, 150),
+    "page_number": QColor(140, 90, 40),
 }
 
 _TYPE_LABEL_KO = {
@@ -63,7 +67,13 @@ _TYPE_LABEL_KO = {
     "formula": "수식",
     "table": "표",
     "problem_number": "문제번호",
+    "page_number": "쪽번호",
 }
+
+# 숫자키로 선택 블록 타입을 바로 바꿀 수 있게 각 타입에 1부터 번호를 매긴다.
+# _TYPE_QCOLOR(따라서 범례에 표시되는 순서)와 항상 같은 순서를 유지해야 한다 —
+# 범례에 적힌 숫자와 실제로 눌러야 할 키가 어긋나면 안 되기 때문.
+_TYPE_SHORTCUT_KEYS = {t: str(i) for i, t in enumerate(_TYPE_QCOLOR, start=1) if i <= 9}
 
 # 이 책의 페이지는 본문(왼쪽 ~70%)과 사이드바(오른쪽)로 나뉜다 — 읽는 순서는
 # 컬럼별로 먼저 묶고 그 안에서 위에서 아래로. x=0.5를 기준으로 삼는 건 대략적인
@@ -80,12 +90,17 @@ _COLUMN_SPLIT_X = 0.5
 _Y_ROW_TOLERANCE = 0.008
 
 
-def _reading_order_key(block: dict) -> tuple[int, int, int]:
+def _reading_order_key(block: dict) -> tuple[int, int, int, int]:
     x, y, _w, _h = block["bbox"]
+    # page_number(쪽번호)는 컬럼·y위치와 무관하게 항상 그 페이지의 맨 마지막에
+    # 온다 — 실제 책에서도 쪽번호는 본문/사이드바 내용과 상관없이 페이지
+    # 가장자리에 따로 찍혀 있으므로, 리플로우에서도 "이 페이지 콘텐츠 다음"
+    # 이라는 의미로 항상 끝에 배치한다.
+    is_page_number = 1 if block["type"] == "page_number" else 0
     column = 1 if x > _COLUMN_SPLIT_X else 0
     y_bucket = round(y / _Y_ROW_TOLERANCE)
     type_priority = 0 if block["type"] == "problem_number" else 1
-    return (column, y_bucket, type_priority)
+    return (is_page_number, column, y_bucket, type_priority)
 
 
 # 위치 연결(attach)에서 "옮길 수 있는" 소스 블록 타입. problem_number는 문제 경계라
@@ -136,11 +151,16 @@ def _build_legend_html() -> str:
     for t, color in _TYPE_QCOLOR.items():
         # 어두운 범례 배경에서도 잘 보이도록 견본색만 살짝 밝힌다 (블록 테두리 원색 유지).
         swatch = color.lighter(140).name()
+        key = _TYPE_SHORTCUT_KEYS.get(t, "")
         rows.append(
-            f'<tr><td style="color:{swatch};font-size:15px;">■</td>'
+            f'<tr><td style="color:#aaaaaa;font-size:12px;">{key}</td>'
+            f'<td style="color:{swatch};font-size:15px;padding-left:4px;">■</td>'
             f'<td style="padding-left:4px;">{_TYPE_LABEL_KO[t]}</td></tr>'
         )
-    rows.append('<tr><td style="font-size:13px;">┄</td><td style="padding-left:4px;">검토 필요 (점선)</td></tr>')
+    rows.append(
+        '<tr><td></td><td style="font-size:13px;">┄</td>'
+        '<td style="padding-left:4px;">검토 필요 (점선)</td></tr>'
+    )
     return f'<table style="margin:2px;">{"".join(rows)}</table>'
 
 
@@ -385,7 +405,6 @@ class ReviewWindow(QMainWindow):
         self.view.on_new_block = self._on_new_block_drawn
         self.view.on_attach_click = self._on_attach_click
         self.view.on_attach_cancel = self._cancel_attach_by_user
-        self.setCentralWidget(self.view)
 
         # 블록 연결 상태: 지정 모드 소스 블록, 연결선 아이템들
         # (id→BlockItem 맵은 캐시하지 않고 씬에서 그때그때 만든다 — _block_item_map)
@@ -393,66 +412,20 @@ class ReviewWindow(QMainWindow):
         self._attach_lines: list[QGraphicsLineItem] = []
 
         self._build_menus()
+        self._build_toolbar()
+        self._build_type_shortcuts()
 
-        toolbar = QToolBar()
-        self.addToolBar(toolbar)
-
-        self.page_spin = QSpinBox()
-        self.page_spin.setRange(self.page_range.start, self.page_range.stop - 1)
-        self.page_spin.setValue(self.current_page)
-        self.page_spin.valueChanged.connect(self._on_page_spin_changed)
-        toolbar.addWidget(QLabel(" 페이지 "))
-        toolbar.addWidget(self.page_spin)
-
-        act_prev = toolbar.addAction("◀ 이전")
-        act_prev.setShortcut(Qt.Key.Key_Left)
-        act_prev.triggered.connect(
-            lambda: self.page_spin.setValue(max(self.page_range.start, self.current_page - 1))
-        )
-        act_next = toolbar.addAction("다음 ▶")
-        act_next.setShortcut(Qt.Key.Key_Right)
-        act_next.triggered.connect(
-            lambda: self.page_spin.setValue(min(self.page_range.stop - 1, self.current_page + 1))
-        )
-
-        toolbar.addSeparator()
-        self.type_combo = QComboBox()
-        self.type_combo.addItems(BLOCK_TYPES)
-        self.type_combo.activated.connect(lambda _: self._on_type_changed(self.type_combo.currentText()))
-        toolbar.addWidget(QLabel(" 선택 블록 타입: "))
-        toolbar.addWidget(self.type_combo)
-        self.scene.selectionChanged.connect(self._sync_type_combo)
-
-        act_merge = toolbar.addAction("병합")
-        act_merge.setShortcut("Ctrl+M")
-        act_merge.triggered.connect(self._merge_selected)
-
-        act_delete = toolbar.addAction("삭제")
-        act_delete.setShortcut(Qt.Key.Key_Delete)
-        act_delete.triggered.connect(self._delete_selected)
-
-        act_attach = toolbar.addAction("블록 연결")
-        act_attach.setShortcut("Ctrl+L")
-        act_attach.triggered.connect(self._start_attach_selected)
-        act_detach = toolbar.addAction("연결 해제")
-        act_detach.triggered.connect(self._detach_selected)
-
-        self.add_action = toolbar.addAction("새 블록 추가")
-        self.add_action.setCheckable(True)
-        self.add_action.setShortcut("N")
-        self.add_action.toggled.connect(self._toggle_add_mode)
-
-        toolbar.addSeparator()
-        toolbar.addAction("다음 검토 필요 페이지").triggered.connect(self._jump_next_needs_review)
-        act_save = toolbar.addAction("저장")
-        act_save.setShortcut("S")
-        act_save.triggered.connect(self._save)
-
-        toolbar.addSeparator()
-        self.done_action = toolbar.addAction("이 페이지 완료")
-        self.done_action.setCheckable(True)
-        self.done_action.setShortcut("D")
-        self.done_action.toggled.connect(self._toggle_done)
+        # 버튼 행(FlowLayout)을 뷰 위에 세로로 쌓는다 — QToolBar를 여러 개
+        # addToolBar()로 나열하면 창이 좁아져도 줄바꿈이 안 되고 창 자체의
+        # 최소 폭이 늘어나 버리는 걸 확인해서(flow_layout.py 모듈 docstring
+        # 참고) 일반 QWidget+FlowLayout으로 대체했다.
+        central = QWidget()
+        central_layout = QVBoxLayout(central)
+        central_layout.setContentsMargins(0, 0, 0, 0)
+        central_layout.setSpacing(0)
+        central_layout.addWidget(self.toolbar_widget)
+        central_layout.addWidget(self.view)
+        self.setCentralWidget(central)
 
         # 뷰포트의 자식으로 붙이면 스크롤 시 같이 밀려 올라가므로(QWidget.scroll은
         # 자식 위젯도 이동시킴) 스크롤 영향이 없는 뷰 프레임에 붙인다.
@@ -466,15 +439,110 @@ class ReviewWindow(QMainWindow):
         # 스크롤바 등장/소멸로 뷰포트 폭이 바뀌는 건 창 resizeEvent에 안 잡히므로
         # 뷰포트 리사이즈를 직접 감지해서 범례를 재배치한다.
         self.view.viewport().installEventFilter(self)
-
-        self.legend_action = toolbar.addAction("범례")
-        self.legend_action.setCheckable(True)
-        self.legend_action.setChecked(True)
-        self.legend_action.setShortcut("L")
         self.legend_action.toggled.connect(self.legend.setVisible)
 
         self.status_label = QLabel()
         self.statusBar().addWidget(self.status_label)
+
+    def _make_tool_button(self, action: QAction) -> QToolButton:
+        btn = QToolButton()
+        btn.setDefaultAction(action)
+        btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        return btn
+
+    def _add_tool_action(self, label: str, shortcut=None, callback=None, checkable: bool = False) -> QAction:
+        """FlowLayout 버튼 행에 버튼 하나를 추가한다.
+
+        label에는 단축키를 괄호로 미리 병기해서 넘긴다(예: "병합 (Ctrl+M)") —
+        버튼에 표시되는 글자가 곧 label이라 따로 포맷할 필요가 없다. checkable=True
+        인데 callback이 없으면(예: 범례 토글처럼 대상 위젯이 아직 안 만들어졌을
+        때) 액션만 만들어 두고 연결은 호출한 쪽에서 나중에 한다.
+        """
+        action = QAction(label, self)
+        if shortcut is not None:
+            action.setShortcut(shortcut)
+        if checkable:
+            action.setCheckable(True)
+            if callback is not None:
+                action.toggled.connect(callback)
+        elif callback is not None:
+            action.triggered.connect(callback)
+        self._toolbar_layout.addWidget(self._make_tool_button(action))
+        return action
+
+    def _add_separator(self) -> None:
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.VLine)
+        line.setFrameShadow(QFrame.Shadow.Sunken)
+        self._toolbar_layout.addWidget(line)
+
+    def _build_toolbar(self) -> None:
+        self.toolbar_widget = QWidget()
+        self._toolbar_layout = FlowLayout(self.toolbar_widget, margin=4, h_spacing=6, v_spacing=4)
+        # QVBoxLayout이 (줄바꿈으로 늘어난) 실제 필요 높이를 알아야 뷰를 안 가리고
+        # 제대로 밀어내린다 — widget에 layout만 달아둔 것으로는 부족하고, 폭에 따라
+        # 높이가 달라진다는 것(heightForWidth)을 sizePolicy에도 명시해야 한다.
+        size_policy = self.toolbar_widget.sizePolicy()
+        size_policy.setHeightForWidth(True)
+        self.toolbar_widget.setSizePolicy(size_policy)
+
+        self.page_spin = QSpinBox()
+        self.page_spin.setRange(self.page_range.start, self.page_range.stop - 1)
+        self.page_spin.setValue(self.current_page)
+        self.page_spin.valueChanged.connect(self._on_page_spin_changed)
+        self._toolbar_layout.addWidget(QLabel(" 페이지 "))
+        self._toolbar_layout.addWidget(self.page_spin)
+
+        self._add_tool_action(
+            "◀ 이전 (←)",
+            Qt.Key.Key_Left,
+            lambda: self.page_spin.setValue(max(self.page_range.start, self.current_page - 1)),
+        )
+        self._add_tool_action(
+            "다음 ▶ (→)",
+            Qt.Key.Key_Right,
+            lambda: self.page_spin.setValue(min(self.page_range.stop - 1, self.current_page + 1)),
+        )
+
+        self._add_separator()
+        self.type_combo = QComboBox()
+        self.type_combo.addItems(BLOCK_TYPES)
+        self.type_combo.activated.connect(lambda _: self._on_type_changed(self.type_combo.currentText()))
+        self._toolbar_layout.addWidget(QLabel(" 선택 블록 타입: "))
+        self._toolbar_layout.addWidget(self.type_combo)
+        self.scene.selectionChanged.connect(self._sync_type_combo)
+
+        self._add_tool_action("병합 (Ctrl+M)", "Ctrl+M", self._merge_selected)
+        self._add_tool_action("삭제 (Delete)", Qt.Key.Key_Delete, self._delete_selected)
+        self._add_tool_action("블록 연결 (Ctrl+L)", "Ctrl+L", self._start_attach_selected)
+        # 예전엔 단축키가 없어 메뉴 클릭으로만 연결을 풀 수 있었다 — 병합/삭제/
+        # 연결처럼 자주 쓰는 편집 동작에 단축키가 없는 게 불편해서 추가.
+        self._add_tool_action("연결 해제 (Ctrl+U)", "Ctrl+U", self._detach_selected)
+
+        self.add_action = self._add_tool_action("새 블록 추가 (N)", "N", self._toggle_add_mode, checkable=True)
+
+        self._add_separator()
+        # "다음 검토 필요 페이지"도 마우스 클릭만 가능했던 버튼 — R(review) 단축키 추가.
+        self._add_tool_action("다음 검토 필요 페이지 (R)", "R", self._jump_next_needs_review)
+        self._add_tool_action("저장 (S)", "S", self._save)
+
+        self._add_separator()
+        self.done_action = self._add_tool_action("이 페이지 완료 (D)", "D", self._toggle_done, checkable=True)
+        # 범례 표시 토글 연결은 self.legend가 만들어진 뒤 _build_ui에서 이어붙인다.
+        self.legend_action = self._add_tool_action("범례 (L)", "L", checkable=True)
+        self.legend_action.setChecked(True)
+
+    def _build_type_shortcuts(self) -> None:
+        """숫자키로 선택된 블록의 타입을 바로 바꾼다.
+
+        범례에 표시되는 번호(_TYPE_SHORTCUT_KEYS, 1부터 BLOCK_TYPES/_TYPE_QCOLOR
+        순서)와 정확히 대응해야 사용자가 범례를 보고 누를 키를 알 수 있다.
+        """
+        for block_type, key in _TYPE_SHORTCUT_KEYS.items():
+            action = QAction(f"타입 변경 {key}: {block_type}", self)
+            action.setShortcut(key)
+            action.triggered.connect(lambda checked=False, t=block_type: self._set_selected_type(t))
+            self.addAction(action)
 
     def _build_menus(self) -> None:
         # Qt는 부모가 소유하면 살아있어야 하지만, PySide6에서 로컬 변수로만 들고 있으면
@@ -956,6 +1024,13 @@ class ReviewWindow(QMainWindow):
             it.apply_style()
         if items:
             self._mark_dirty()
+
+    def _set_selected_type(self, new_type: str) -> None:
+        """숫자키 단축키로 선택된 블록의 타입을 바꾼다 (_TYPE_SHORTCUT_KEYS 참고)."""
+        if not self._selected_items():
+            return
+        self.type_combo.setCurrentText(new_type)
+        self._on_type_changed(new_type)
 
     _ID_NUM_RE = re.compile(r"(\d+)$")
 
