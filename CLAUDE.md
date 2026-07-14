@@ -69,10 +69,16 @@ editor/ (PySide6, 맥)  --분석+보정-->  shared/schema JSON  --rsync-->  serv
 ## 자주 쓰는 명령어
 
 ```bash
-# 편집기 (editor/ 안에서, 또는 editable 설치 후 아무 데서나)
+# 편집기 최초 설정 (editor/ 안에서, 한 번만)
 cd editor && python3 -m venv .venv && source .venv/bin/activate
-pip install -e .                          # editable 설치, mathflow_editor 패키지 등록
-python -m mathflow_editor.ui.main          # 검토 UI 실행 (PDF 경로·book_id는 ui/main.py에 하드코딩)
+pip install -e .                          # 의존성 설치 + mathflow_editor를 최상위 이름으로도 매핑
+                                           # (prototypes/*.py가 `from mathflow_editor...`로 이 매핑에 의존함 — 지우지 말 것)
+
+# 편집기 실행 (반드시 레포 루트에서, venv는 활성화된 채로)
+source editor/.venv/bin/activate
+python3 -m editor.mathflow_editor.ui.main # 검토 UI 실행 (PDF 경로·book_id는 ui/main.py에 하드코딩)
+                                           # editor/에 __init__.py가 없어 네임스페이스 패키지로 잡힘 →
+                                           # 레포 루트가 아닌 곳(예: editor/ 안)에서 실행하면 ModuleNotFoundError
 
 # 스키마 검증
 python shared/schema/validate.py                       # shared/schema/examples/*.json 검증
