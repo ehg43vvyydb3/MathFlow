@@ -84,3 +84,19 @@ def load_status(path: Path) -> dict[int, str]:
 def save_status(status: dict[int, str], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({str(k): v for k, v in status.items()}, ensure_ascii=False, indent=2) + "\n")
+
+
+# ---------- 마지막으로 보던 페이지 ----------
+# 이 역시 검증 대상 스키마 밖의 편집기 전용 상태다.
+
+
+def load_last_page(path: Path) -> int | None:
+    """마지막으로 열려 있던 페이지 번호. 파일 없으면 None(기본 시작 페이지 사용)."""
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())["page"]
+
+
+def save_last_page(page: int, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"page": page}) + "\n")

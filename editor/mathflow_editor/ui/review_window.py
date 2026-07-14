@@ -362,7 +362,14 @@ class ReviewWindow(QMainWindow):
         self.page_status: dict[int, str] = metadata.load_status(self.status_path)
         self._load_existing_output()
 
-        self.current_page = page_range.start
+        self.last_page_path = self.output_dir / "last_page.json"
+        last_page = metadata.load_last_page(self.last_page_path)
+        last_unit = units_module.unit_containing(last_page) if last_page is not None else None
+        if last_unit is not None:
+            self.page_range = last_unit.page_range
+            self.current_page = last_page
+        else:
+            self.current_page = page_range.start
         self._page_w = 0
         self._page_h = 0
         self.dirty = False  # 마지막 저장 이후 아직 저장 안 된 변경이 있는지
@@ -805,6 +812,7 @@ class ReviewWindow(QMainWindow):
 
     def _load_page(self, page_number: int) -> None:
         self.current_page = page_number
+        metadata.save_last_page(page_number, self.last_page_path)
         img = segment.render_page(self.pdf_path, page_number - 1, 150)
         h, w = img.shape[:2]
         self._page_w, self._page_h = w, h
