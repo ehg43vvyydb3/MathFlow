@@ -46,6 +46,48 @@ def render_page(pdf_path: Path, page_index: int, dpi: int) -> np.ndarray:
     return img
 
 
+QR_DETECT_DPI = 900  # 아래 detect_qr_codes 참고 — 150dpi에서는 위치조차 못 찾는다
+
+
+def detect_qr_codes(
+    pdf_path: Path, page_index: int, target_w: int, target_h: int, qr_dpi: int = QR_DETECT_DPI
+) -> list[Box]:
+    """"정답 및 풀이 영상" QR코드 위치를 찾아 target_w x target_h(보통 detect_blocks에
+    넘기는 150dpi 렌더링) 픽셀 좌표로 변환해 반환한다.
+
+    이 책의 스캔 해상도로 렌더링한 150dpi 이미지에서는 cv2 QRCodeDetector가 위치조차
+    못 찾는다(실측: 300~600dpi 전부 실패) — 900dpi로 다시 렌더링해야 안정적으로
+    찾는다(32·64·246·290쪽 각각의 QR 전부 검출 확인, 750dpi는 간헐적으로 놓침).
+    디코딩(실제 URL 읽기)은 시도하지 않는다 — 필요한 건 "여기는 블록으로 잡지
+    말라"는 위치뿐이고, decode까지 하는 detectAndDecodeMulti보다 detectMulti가
+    더 빠르다.
+    """
+    qr_img = render_page(pdf_path, page_index, qr_dpi)
+    qr_h, qr_w = qr_img.shape[:2]
+    ok, points = cv2.QRCodeDetector().detectMulti(qr_img)
+    if not ok or points is None:
+        return []
+    boxes: list[Box] = []
+    for poly in points:
+        xs, ys = poly[:, 0], poly[:, 1]
+        boxes.append(
+            Box(
+                int(xs.min() / qr_w * target_w),
+                int(ys.min() / qr_h * target_h),
+                int(xs.max() / qr_w * target_w),
+                int(ys.max() / qr_h * target_h),
+            )
+        )
+    return boxes
+
+
+def blank_boxes(mask: np.ndarray, boxes: list[Box]) -> np.ndarray:
+    """마스크에서 주어진 영역을 0으로 지운다 (QR코드처럼 블록화하면 안 되는 잉크 제외용)."""
+    for b in boxes:
+        mask[b.y0 : b.y1, b.x0 : b.x1] = 0
+    return mask
+
+
 def ink_mask(gray: np.ndarray, min_component_area: int = 4) -> np.ndarray:
     """어두운 픽셀(글자/선/음영)을 255로 하는 이진 마스크.
 
@@ -364,9 +406,17 @@ def _extend_with_adjacent_number(
     return Box(icon_box.x0, icon_box.y0, icon_box.x1 + last_ink_x + 1, icon_box.y1)
 
 
-def detect_blocks(img: np.ndarray) -> list[Box]:
-    """페이지 이미지에서 블록 후보 bbox 리스트를 뽑는다 (타입 분류 없음)."""
+def detect_blocks(img: np.ndarray, qr_boxes: list[Box] | None = None) -> list[Box]:
+    """페이지 이미지에서 블록 후보 bbox 리스트를 뽑는다 (타입 분류 없음).
+
+    qr_boxes가 주어지면 그 영역의 잉크를 컬럼/줄 밴드를 뽑기 전에 지운다 — QR코드는
+    검정/흰색이 촘촘히 섞인 잡음 덩어리라 지우지 않으면 옆 문제번호/본문 블록의
+    x범위를 왼쪽으로 넓혀서(148쪽 실측) 자기 블록 없이 그냥 이웃 블록에 흡수돼
+    버린다.
+    """
     mask_lines = compute_mask_lines(img)
+    if qr_boxes:
+        blank_boxes(mask_lines, qr_boxes)
 
     columns = detect_columns(mask_lines, min_gap_px=20)
 
@@ -411,7 +461,7 @@ def detect_blocks(img: np.ndarray) -> list[Box]:
                 continue
             boxes.append(box)
 
-    boxes = _split_leading_labels(mask_lines, boxes)
+    boxes = _split_leading_labels(img, mask_lines, boxes)
     boxes = _split_tall_lines(mask_lines, boxes)
     boxes = [b for b in boxes if not _is_debris(b, page_w, page_h)]
     return [_pad_box(b, mask_lines.shape[1], mask_lines.shape[0]) for b in boxes]
@@ -496,7 +546,16 @@ def _retighten_x(mask_lines: np.ndarray, box: Box) -> Box:
 def _first_line_components(
     mask_lines: np.ndarray, box: Box
 ) -> tuple[int, int, list[tuple[int, int, int]]] | None:
-    """블록의 첫 줄 (y0,y1)과 그 줄의 연결 성분(x0,width,height) 리스트를 반환."""
+    """블록의 첫 줄 (y0,y1)과 그 줄의 연결 성분(x0,width,height) 리스트를 반환.
+
+    높이 10px 미만인 성분은 제외한다 — QR코드로 이어지는 곡선 안내선의 끝자락이
+    번호 바로 위 줄에 살짝 걸쳐 폭은 있지만 키가 3~6px짜리 조각으로 잡히는
+    경우가 있었다(32쪽 "58"/"59", 64쪽 "148" 실측: 진짜 번호는 높이 19~23px인데
+    안내선 조각이 x=0 근처에서 먼저 정렬돼 comps[0]을 차지해버려
+    split_colored_leading_label이 색 판정을 번호가 아니라 이 조각에 대고 해서
+    분리에 실패했다). 10px는 실측한 잡음 조각(최대 6px)과 실제 글자
+    (최소 19px) 사이에 여유 있게 걸쳐 있다.
+    """
     bands = _internal_line_bands(mask_lines, box)
     if not bands:
         return None
@@ -511,9 +570,72 @@ def _first_line_components(
             int(stats[i, cv2.CC_STAT_HEIGHT]),
         )
         for i in range(1, n)
+        if stats[i, cv2.CC_STAT_HEIGHT] >= 10
     ]
     comps.sort()
     return line_y0, line_y1, comps
+
+
+# "연습문제"(단원 뒤 복습 문제) 절의 문제 번호는 진한 자주색 볼드체로 인쇄되고
+# 바로 오른쪽에 문제 본문이 정상적인 단어 간격으로 붙어 나온다 — 간격이 넓지
+# 않아 위 gap_ratio_thresh 신호로는 못 잡는다. 완료된 10~64쪽(Ⅰ-1, Ⅰ-2) diff
+# 에서 이 패턴이 problem_number 미검출/오분류로 가장 큰 카테고리였다(2026-07-14,
+# 자동분석 재실행 후 저장본과 비교: 추가 128건 + 타입변경 66건, 그중 연습문제
+# 페이지 30~32·63~64에만도 29건). 실측(32쪽 "57", 63쪽 "136", 64쪽 "143") 색
+# 범위: H 145~172, S 50 이상, V 60~210 — 본문 검정 글자(같은 방식으로 잰 S가
+# 90퍼센타일 25~31, 튀는 값도 48 이하)나 "필수"/"확인체크" 배지(H 85~125)와
+# 안전하게 구분된다.
+PRACTICE_NUMBER_HUE_MIN = 145
+PRACTICE_NUMBER_HUE_MAX = 172
+PRACTICE_NUMBER_SAT_MIN = 50
+PRACTICE_NUMBER_VAL_MIN = 60
+PRACTICE_NUMBER_VAL_MAX = 210
+
+
+def is_practice_number_color(img: np.ndarray, box: Box) -> bool:
+    """박스 내부 잉크 대부분이 연습문제 번호 특유의 자주색인지 판정."""
+    region = img[box.y0 : box.y1, box.x0 : box.x1]
+    if region.size == 0:
+        return False
+    gray = cv2.cvtColor(region, cv2.COLOR_BGR2GRAY)
+    ink = gray < 180
+    if ink.sum() < 20:
+        return False
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    h, s, v = hsv[:, :, 0][ink], hsv[:, :, 1][ink], hsv[:, :, 2][ink]
+    colored = (
+        (h >= PRACTICE_NUMBER_HUE_MIN)
+        & (h <= PRACTICE_NUMBER_HUE_MAX)
+        & (s >= PRACTICE_NUMBER_SAT_MIN)
+        & (v >= PRACTICE_NUMBER_VAL_MIN)
+        & (v <= PRACTICE_NUMBER_VAL_MAX)
+    )
+    return bool(colored.mean() > 0.6)
+
+
+def split_colored_leading_label(img: np.ndarray, mask_lines: np.ndarray, box: Box) -> tuple[Box | None, Box]:
+    """블록 첫 줄의 첫 연결성분이 연습문제 번호 색이면 간격 폭과 무관하게 분리한다.
+
+    split_leading_label의 간격 휴리스틱은 "26  다음 그림..."처럼 번호 뒤에
+    유난히 넓은 여백을 둔 조판에서만 통한다. 연습문제 절은 번호와 본문 사이가
+    보통 단어 한 칸 정도라 그 신호로는 안 걸리지만, 번호 자체가 색으로 뚜렷이
+    구분되므로 여기서는 색만 보고 자른다.
+    """
+    parsed = _first_line_components(mask_lines, box)
+    if parsed is None:
+        return None, box
+    line_y0, line_y1, comps = parsed
+    if len(comps) < 2:
+        return None, box
+
+    label_x0, label_w, _label_h = comps[0]
+    label_box = Box(box.x0 + label_x0, box.y0 + line_y0, box.x0 + label_x0 + label_w, box.y0 + line_y1)
+    if not is_practice_number_color(img, label_box):
+        return None, box
+
+    rest_x0 = box.x0 + comps[1][0]
+    rest_box = Box(rest_x0, box.y0, box.x1, box.y1)
+    return label_box, rest_box
 
 
 def split_leading_label(
@@ -555,10 +677,12 @@ def split_leading_label(
     return label_box, rest_box
 
 
-def _split_leading_labels(mask_lines: np.ndarray, boxes: list[Box]) -> list[Box]:
+def _split_leading_labels(img: np.ndarray, mask_lines: np.ndarray, boxes: list[Box]) -> list[Box]:
     result: list[Box] = []
     for box in boxes:
-        label_box, rest_box = split_leading_label(mask_lines, box)
+        label_box, rest_box = split_colored_leading_label(img, mask_lines, box)
+        if label_box is None:
+            label_box, rest_box = split_leading_label(mask_lines, box)
         if label_box is not None:
             result.append(label_box)
         result.append(rest_box)

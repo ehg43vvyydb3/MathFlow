@@ -5,17 +5,21 @@
 const BOOK_ID = "gongtong-math-2";
 const API = ""; // 같은 오리진에서 서빙되므로 상대경로
 
+// 페이지 범위는 editor/mathflow_editor/units.py의 UNITS와 손으로 맞춘다(코드
+// 공유 수단 없음). 2026-07-14: 소단원 표지가 다음 단원 대신 이전 단원 마지막
+// 페이지로 오귀속되던 버그가 Ⅰ-2 이후 모든 경계에 반복돼 있어 전체 재검증
+// 후 수정 — 자세한 근거는 units.py 쪽 docstring 참고.
 const UNITS = [
   { id: "I-1", title: "Ⅰ-1. 평면좌표", start: 10, end: 32 },
-  { id: "I-2", title: "Ⅰ-2. 직선의 방정식", start: 33, end: 65 },
-  { id: "I-3", title: "Ⅰ-3. 원의 방정식", start: 66, end: 97 },
-  { id: "I-4", title: "Ⅰ-4. 도형의 이동", start: 98, end: 119 },
-  { id: "II-1", title: "Ⅱ-1. 집합의 뜻과 포함 관계", start: 120, end: 137 },
-  { id: "II-2", title: "Ⅱ-2. 집합의 연산", start: 138, end: 165 },
-  { id: "II-3", title: "Ⅱ-3. 명제", start: 166, end: 205 },
-  { id: "III-1", title: "Ⅲ-1. 함수", start: 206, end: 247 },
-  { id: "III-2", title: "Ⅲ-2. 유리함수", start: 248, end: 275 },
-  { id: "III-3", title: "Ⅲ-3. 무리함수", start: 276, end: 291 },
+  { id: "I-2", title: "Ⅰ-2. 직선의 방정식", start: 33, end: 64 },
+  { id: "I-3", title: "Ⅰ-3. 원의 방정식", start: 65, end: 96 },
+  { id: "I-4", title: "Ⅰ-4. 도형의 이동", start: 97, end: 118 },
+  { id: "II-1", title: "Ⅱ-1. 집합의 뜻과 포함 관계", start: 119, end: 136 },
+  { id: "II-2", title: "Ⅱ-2. 집합의 연산", start: 137, end: 164 },
+  { id: "II-3", title: "Ⅱ-3. 명제", start: 165, end: 204 },
+  { id: "III-1", title: "Ⅲ-1. 함수", start: 205, end: 246 },
+  { id: "III-2", title: "Ⅲ-2. 유리함수", start: 247, end: 274 },
+  { id: "III-3", title: "Ⅲ-3. 무리함수", start: 275, end: 291 },
 ];
 
 const ROLE_LAYOUT = {

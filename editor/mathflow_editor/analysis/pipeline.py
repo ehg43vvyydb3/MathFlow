@@ -59,16 +59,24 @@ def crop_png(img: np.ndarray, box: segment.Box) -> bytes:
     return buf.tobytes()
 
 
-def _apply_type_rules(vlm_type: str, bbox_norm: list[float]) -> str:
-    """VLM 분류 결과에 기하학적 상식 규칙을 덧씌운다.
+def _apply_type_rules(vlm_type: str, bbox_norm: list[float], img: np.ndarray, box: segment.Box) -> str:
+    """VLM 분류 결과에 기하학적/색상 상식 규칙을 덧씌운다.
 
     10~12쪽 실편집에서 VLM이 소단원 배지("1 수직선 위의...")처럼 폭이 넓은
     블록을 problem_number로 자주 오분류하는 패턴이 확인됐다. 진짜 문제번호는
     페이지 폭의 ~3% 수준이므로, 폭이 넓으면 text로 교정한다.
+
+    반대 방향 오류도 있다: "연습문제" 절의 자주색 문제번호(segment.
+    split_colored_leading_label이 간격과 무관하게 분리해내는 블록)를 VLM이
+    text로 잘못 읽는 경우가 완료 10~64쪽 diff에서 66건으로 가장 큰 타입변경
+    카테고리였다 — 색 자체가 이미 problem_number라는 강한 신호이므로 VLM
+    답과 무관하게 덮어쓴다.
     """
     _x, _y, w, _h = bbox_norm
     if vlm_type == "problem_number" and w > 0.08:
         return "text"
+    if vlm_type != "problem_number" and segment.is_practice_number_color(img, box):
+        return "problem_number"
     return vlm_type
 
 
@@ -98,9 +106,17 @@ def run_page(
     """
     img = segment.render_page(pdf_path, page_index, dpi)
     h, w = img.shape[:2]
-    boxes = segment.detect_blocks(img)
+    # "정답 및 풀이 영상" QR코드는 콘텐츠가 아니라 완전히 제외한다 — 150dpi로는
+    # 위치조차 못 찾아서 900dpi로 따로 다시 렌더링해 찾는다(segment.detect_qr_codes
+    # 참고). 못 지우면 옆 문제번호/본문 블록의 x범위를 왼쪽으로 넓혀서 자기
+    # 블록 없이 이웃 블록에 흡수돼 버린다(148쪽 실측).
+    qr_boxes = segment.detect_qr_codes(pdf_path, page_index, w, h)
+    boxes = segment.detect_blocks(img, qr_boxes=qr_boxes)
     mask_lines = segment.compute_mask_lines(img)  # text 블록의 줄 단위 분리용, 페이지당 한 번
     mask_words = segment.compute_mask_words(img)  # 긴 한 줄 강제 줄바꿈의 단어 간격 검출용, 페이지당 한 번
+    if qr_boxes:
+        segment.blank_boxes(mask_lines, qr_boxes)
+        segment.blank_boxes(mask_words, qr_boxes)
 
     # "필수 05"/"확인체크 12" 같은 원형 색상 배지는 detect_blocks가 못 잡는다
     # (PLAN.md, 23페이지 diff에서 가장 큰 미해결 패턴) — 색으로 따로 찾아 채워
@@ -140,7 +156,7 @@ def run_page(
             cached = {"type": result.type, "confidence": result.confidence, "needs_review": result.needs_review}
             cache.set(image_hash, cached)
 
-        block_type = _apply_type_rules(cached["type"], box.norm(w, h))
+        block_type = _apply_type_rules(cached["type"], box.norm(w, h), img, box)
         block = {
             "id": f"{prefix}_b{i:02d}",
             "page": page_number,
