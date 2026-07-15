@@ -1,6 +1,8 @@
 // MathFlow 웹 뷰어 — 빌드 없는 순수 JS. 서버는 book/pages/blocks.json과 페이지
-// 이미지를 읽기 전용으로 서빙만 하고, 북마크/즐겨찾기/최근 페이지는 아직 서버
-// DB가 없어서 이 브라우저(localStorage)에만 저장된다 — 기기 간 동기화는 안 됨.
+// 이미지를 읽기 전용으로 서빙한다. 사용자 상태(북마크/즐겨찾기/최근/문제표시/
+// 마지막페이지/답지분할선)는 로컬 localStorage 원장에 저장하면서, 동시에 서버의
+// 작은 동기화 저장소(/book/{id}/state)와 항목 단위 LWW로 병합해 기기 간 동기화한다
+// (아래 "기기 간 동기화" 섹션). 서버가 없거나 오프라인이면 로컬만으로 동작한다.
 
 const BOOK_ID = "gongtong-math-2";
 const API = ""; // 같은 오리진에서 서빙되므로 상대경로
@@ -49,15 +51,15 @@ const state = {
   answers: null, // answers.json { count, page_w, page_h, page_map } — 답지 없는 책이면 null
   answerPage: 1, // 답지 모달에서 현재 보고 있는 답지 페이지(1-indexed)
   answerMode: "split", // "split"(2단 세로 분할) | "full"(통짜 페이지)
-  answerSplits: {}, // {답지페이지: 거터x} 사용자 조정 오버라이드 (init에서 localStorage 로드)
-  marks: {}, // {"페이지:문제순번": "done"|"important"} (init에서 localStorage 로드)
+  answerSplits: {}, // {답지페이지: 거터x} 동기화 원장에서 파생 (rebuildDerived)
+  marks: {}, // {"페이지:문제순번": "done"|"important"} 동기화 원장에서 파생 (rebuildDerived)
 };
 
 function unitForPage(page) {
   return UNITS.find((u) => page >= u.start && page <= u.end) || UNITS[0];
 }
 
-// ---------- localStorage (책 단위로 네임스페이스) ----------
+// ---------- 로컬 저장 키 (책 단위 네임스페이스) ----------
 
 function lsKey(kind) {
   return `mathflow.${kind}.${BOOK_ID}`;
@@ -71,20 +73,198 @@ function lsGetList(kind) {
   }
 }
 
-function lsSetList(kind, list) {
-  localStorage.setItem(lsKey(kind), JSON.stringify(list));
+// ---------- 기기 간 동기화 (항목별 Last-Write-Wins 맵) ----------
+// 모든 사용자 상태(문제표시·즐겨찾기·북마크·최근·마지막페이지·답지분할선)를 항목
+// 단위 LWW 맵으로 관리한다. 각 항목 = {v:값, t:타임스탬프(ms), d:삭제(tombstone)}.
+// 로컬은 localStorage(lsKey("sync"))에 원장으로 저장하고, 변경 시 서버로 push,
+// 로드/포커스 시 pull해 같은 규칙(더 최신 t가 이김)으로 병합한다. 서버가 없거나
+// 오프라인이어도 로컬만으로 그대로 동작하고, 연결되면 자동으로 밀어올린다.
+// 인증 없는 tailnet 단일 사용자 전제 — 책마다 하나의 공유 상태.
+
+const SYNC_KINDS = ["marks", "favorites", "bookmarks", "recent", "answerSplits", "lastPage"];
+
+function emptyLedger() {
+  const l = {};
+  for (const k of SYNC_KINDS) l[k] = {};
+  return l;
 }
 
+let syncLedger = emptyLedger();
+let syncStarted = false; // init 완료 전 pull이 렌더 함수를 부르지 않도록 하는 가드
+let pushTimer = null;
+
+function loadLedger() {
+  let raw = null;
+  try {
+    raw = JSON.parse(localStorage.getItem(lsKey("sync")));
+  } catch {
+    raw = null;
+  }
+  const l = emptyLedger();
+  if (raw && typeof raw === "object") {
+    for (const k of SYNC_KINDS) {
+      if (raw[k] && typeof raw[k] === "object") l[k] = raw[k];
+    }
+  }
+  return l;
+}
+
+function persistLedger() {
+  localStorage.setItem(lsKey("sync"), JSON.stringify(syncLedger));
+}
+
+function syncSet(kind, key, value) {
+  syncLedger[kind][String(key)] = { v: value, t: Date.now(), d: 0 };
+  persistLedger();
+  schedulePush();
+}
+
+function syncDelete(kind, key) {
+  // tombstone을 남긴다 — 다른 기기엔 아직 살아있을 수 있어 삭제가 전파돼야 한다.
+  syncLedger[kind][String(key)] = { v: null, t: Date.now(), d: 1 };
+  persistLedger();
+  schedulePush();
+}
+
+function syncGet(kind, key) {
+  const e = syncLedger[kind][String(key)];
+  return e && !e.d ? e.v : undefined;
+}
+
+function syncLive(kind) {
+  return Object.entries(syncLedger[kind]).filter(([, e]) => e && !e.d);
+}
+
+// 서버/다른 기기에서 받은 원장을 LWW로 병합한다 (더 최신 t만 반영). 바뀐 게 있으면 true.
+function mergeLedger(incoming) {
+  let changed = false;
+  for (const kind of SYNC_KINDS) {
+    const items = incoming && incoming[kind];
+    if (!items || typeof items !== "object") continue;
+    for (const [key, e] of Object.entries(items)) {
+      if (!e || typeof e.t !== "number") continue;
+      const cur = syncLedger[kind][key];
+      if (!cur || e.t > cur.t) {
+        syncLedger[kind][key] = { v: e.d ? null : e.v, t: e.t, d: e.d ? 1 : 0 };
+        changed = true;
+      }
+    }
+  }
+  if (changed) persistLedger();
+  return changed;
+}
+
+function schedulePush() {
+  if (pushTimer) clearTimeout(pushTimer);
+  pushTimer = setTimeout(pushNow, 800);
+}
+
+async function pushNow() {
+  if (pushTimer) {
+    clearTimeout(pushTimer);
+    pushTimer = null;
+  }
+  try {
+    const res = await fetch(`${API}/book/${BOOK_ID}/state`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ state: syncLedger }),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const data = await res.json();
+    if (mergeLedger(data.state) && syncStarted) applyLedgerToUI();
+  } catch (err) {
+    console.warn("동기화 push 실패(로컬은 유지):", err.message);
+  }
+}
+
+async function pullNow() {
+  try {
+    const data = await fetchJSON(`${API}/book/${BOOK_ID}/state`);
+    if (mergeLedger(data.state) && syncStarted) applyLedgerToUI();
+  } catch (err) {
+    console.warn("동기화 pull 실패(로컬은 유지):", err.message);
+  }
+}
+
+// 원장 → 화면. 파생 캐시(state.marks/answerSplits)를 다시 만들고 보이는 것 갱신.
+function rebuildDerived() {
+  state.marks = {};
+  for (const [k, e] of syncLive("marks")) state.marks[k] = e.v;
+  state.answerSplits = {};
+  for (const [k, e] of syncLive("answerSplits")) state.answerSplits[Number(k)] = e.v;
+}
+
+function applyLedgerToUI() {
+  rebuildDerived();
+  renderDrawerLists();
+  renderCurrent();
+}
+
+// 최초 실행 시 예전 localStorage 키들을 원장으로 이관한다 (원장이 이미 있으면 건너뜀).
+// 폰에 이미 쌓인 즐겨찾기/문제표시 등을 잃지 않고 그대로 동기화 대상에 편입한다.
+function migrateLegacyIntoLedger() {
+  if (localStorage.getItem(lsKey("sync")) != null) return;
+  const now = Date.now();
+  for (const page of lsGetList("favorites")) {
+    syncLedger.favorites[String(page)] = { v: true, t: now, d: 0 };
+  }
+  for (const b of lsGetList("bookmarks")) {
+    if (b && b.page != null) {
+      syncLedger.bookmarks[String(b.page)] = { v: { at: b.at || now }, t: b.at || now, d: 0 };
+    }
+  }
+  // recent는 순서(앞이 최신)를 타임스탬프 내림차순으로 보존한다.
+  lsGetList("recent").forEach((page, i) => {
+    syncLedger.recent[String(page)] = { v: now - i, t: now - i, d: 0 };
+  });
+  // 문제표시: 예전 배열 형식(["42:2", ...])이면 전부 done으로 마이그레이션.
+  let rawMarks = null;
+  try {
+    rawMarks = JSON.parse(localStorage.getItem(lsKey("solved")));
+  } catch {
+    rawMarks = null;
+  }
+  let marksObj = {};
+  if (Array.isArray(rawMarks)) {
+    for (const k of rawMarks) marksObj[k] = "done";
+  } else if (rawMarks && typeof rawMarks === "object") {
+    marksObj = rawMarks;
+  }
+  for (const [k, v] of Object.entries(marksObj)) {
+    syncLedger.marks[k] = { v, t: now, d: 0 };
+  }
+  let splits = {};
+  try {
+    splits = JSON.parse(localStorage.getItem(lsKey("answerSplits"))) || {};
+  } catch {
+    splits = {};
+  }
+  for (const [k, v] of Object.entries(splits)) {
+    syncLedger.answerSplits[String(k)] = { v, t: now, d: 0 };
+  }
+  const lastPage = parseInt(localStorage.getItem(lsKey("lastPage")), 10);
+  if (!Number.isNaN(lastPage)) {
+    syncLedger.lastPage.value = { v: lastPage, t: now, d: 0 };
+  }
+  persistLedger();
+}
+
+// ---------- 사용자 상태 접근 (원장 위에서) ----------
+
 function isFavorite(page) {
-  return lsGetList("favorites").includes(page);
+  return syncGet("favorites", page) === true;
 }
 
 function toggleFavorite(page) {
-  const list = lsGetList("favorites");
-  const i = list.indexOf(page);
-  if (i >= 0) list.splice(i, 1);
-  else list.push(page);
-  lsSetList("favorites", list);
+  if (isFavorite(page)) syncDelete("favorites", page);
+  else syncSet("favorites", page, true);
+}
+
+function favoritePages() {
+  return syncLive("favorites")
+    .map(([k]) => Number(k))
+    .sort((a, b) => a - b);
 }
 
 // 문제 단위 표시: 미완료(없음) → 완료(done) → 중요(important) 3단계 순환.
@@ -94,27 +274,6 @@ function toggleFavorite(page) {
 // 페이지의 문제 개수/순서가 바뀌면 어긋날 수 있지만 id보다는 훨씬 안정적이다.
 function markKey(page, idx) {
   return `${page}:${idx}`;
-}
-
-// 저장 형식은 {key: "done"|"important"}. 2단계였던 예전 버전은 ["42:2", ...] 배열로
-// 저장했으므로, 배열이면 전부 "done"으로 마이그레이션해 기존 체크를 살린다.
-function loadMarks() {
-  let raw = null;
-  try {
-    raw = JSON.parse(localStorage.getItem(lsKey("solved")));
-  } catch {
-    raw = null;
-  }
-  if (Array.isArray(raw)) {
-    const migrated = {};
-    for (const k of raw) migrated[k] = "done";
-    return migrated;
-  }
-  return raw && typeof raw === "object" ? raw : {};
-}
-
-function saveMarks() {
-  localStorage.setItem(lsKey("solved"), JSON.stringify(state.marks));
 }
 
 function markOf(page, idx) {
@@ -130,29 +289,43 @@ function nextMark(cur) {
 function cycleMark(page, idx) {
   const key = markKey(page, idx);
   const next = nextMark(state.marks[key]);
-  if (next) state.marks[key] = next;
-  else delete state.marks[key];
-  saveMarks();
+  if (next) {
+    state.marks[key] = next;
+    syncSet("marks", key, next);
+  } else {
+    delete state.marks[key];
+    syncDelete("marks", key);
+  }
   return next;
 }
 
 function addBookmark(page) {
-  const list = lsGetList("bookmarks");
-  if (!list.some((b) => b.page === page)) {
-    list.unshift({ page, at: Date.now() });
-    lsSetList("bookmarks", list);
+  if (syncGet("bookmarks", page) === undefined) {
+    syncSet("bookmarks", page, { at: Date.now() });
   }
 }
 
 function removeBookmark(page) {
-  lsSetList("bookmarks", lsGetList("bookmarks").filter((b) => b.page !== page));
+  syncDelete("bookmarks", page);
+}
+
+function bookmarkPages() {
+  return syncLive("bookmarks")
+    .map(([k, e]) => ({ page: Number(k), at: (e.v && e.v.at) || 0 }))
+    .sort((a, b) => b.at - a.at)
+    .map((b) => b.page);
 }
 
 function pushRecent(page) {
-  let list = lsGetList("recent").filter((p) => p !== page);
-  list.unshift(page);
-  list = list.slice(0, 20);
-  lsSetList("recent", list);
+  // 방문 시각을 값으로 저장하고, 표시할 땐 시각 내림차순으로 정렬해 최근 20개만 쓴다.
+  syncSet("recent", page, Date.now());
+}
+
+function recentPages() {
+  return syncLive("recent")
+    .sort((a, b) => (b[1].v || 0) - (a[1].v || 0))
+    .slice(0, 20)
+    .map(([k]) => Number(k));
 }
 
 // ---------- API ----------
@@ -394,7 +567,7 @@ function goToPage(page) {
   pushRecent(page);
   renderCurrent();
   renderDrawerLists();
-  localStorage.setItem(lsKey("lastPage"), String(page));
+  syncSet("lastPage", "value", page);
   el.content.scrollTop = 0;
 }
 
@@ -420,15 +593,9 @@ function goToPageAnyUnit(page) {
 }
 
 function renderDrawerLists() {
-  renderList(el.listFavorites, lsGetList("favorites").sort((a, b) => a - b), (page) => `${page}쪽`, true);
-  renderList(
-    el.listBookmarks,
-    lsGetList("bookmarks").map((b) => b.page),
-    (page) => `${page}쪽`,
-    false,
-    removeBookmark
-  );
-  renderList(el.listRecent, lsGetList("recent"), (page) => `${page}쪽`, false);
+  renderList(el.listFavorites, favoritePages(), (page) => `${page}쪽`, true);
+  renderList(el.listBookmarks, bookmarkPages(), (page) => `${page}쪽`, false, removeBookmark);
+  renderList(el.listRecent, recentPages(), (page) => `${page}쪽`, false);
 }
 
 function renderList(ulEl, pages, label, removeIsFavoriteToggle, onRemove) {
@@ -621,17 +788,17 @@ el.answerMode.onclick = () => {
   state.answerMode = state.answerMode === "split" ? "full" : "split";
   renderAnswer();
 };
-// 분할선 조정: 드래그 중엔 즉시 재배치(스크롤 유지), 놓을 때 localStorage에 저장.
+// 분할선 조정: 드래그 중엔 즉시 재배치(스크롤 유지, 원장은 안 건드림), 놓을 때 원장에 저장.
 el.answerSplit.oninput = () => {
   state.answerSplits[state.answerPage] = parseFloat(el.answerSplit.value);
   layoutAnswer();
 };
 el.answerSplit.onchange = () => {
-  localStorage.setItem(lsKey("answerSplits"), JSON.stringify(state.answerSplits));
+  syncSet("answerSplits", state.answerPage, state.answerSplits[state.answerPage]);
 };
 el.answerSplitReset.onclick = () => {
   delete state.answerSplits[state.answerPage]; // 파리티 기본값으로 되돌림
-  localStorage.setItem(lsKey("answerSplits"), JSON.stringify(state.answerSplits));
+  syncDelete("answerSplits", state.answerPage);
   renderAnswer();
 };
 el.unitSelect.onchange = () => {
@@ -661,12 +828,11 @@ async function init() {
   } catch {
     state.answers = null;
   }
-  try {
-    state.answerSplits = JSON.parse(localStorage.getItem(lsKey("answerSplits"))) || {};
-  } catch {
-    state.answerSplits = {};
-  }
-  state.marks = loadMarks(); // 예전 배열 형식이면 여기서 done으로 마이그레이션
+
+  // 동기화 원장 로드(없으면 예전 localStorage 키에서 이관) → 파생 캐시 재구성.
+  syncLedger = loadLedger();
+  migrateLegacyIntoLedger();
+  rebuildDerived();
 
   for (const unit of UNITS) {
     const opt = document.createElement("option");
@@ -676,13 +842,18 @@ async function init() {
   }
 
   // 마지막으로 보던 페이지가 있으면 그 페이지가 속한 단원을 열고, 없으면 첫 단원부터.
-  const saved = parseInt(localStorage.getItem(lsKey("lastPage")), 10);
+  const saved = Number(syncGet("lastPage", "value")) || 0;
   const startUnit = saved ? unitForPage(saved) : UNITS[0];
   const startPage = saved && saved >= startUnit.start && saved <= startUnit.end ? saved : startUnit.start;
 
   applyUnit(startUnit);
   renderDrawerLists();
   goToPage(startPage);
+
+  // 이제부터 pull이 화면을 갱신해도 안전하다. 서버에서 받아 병합(pull)한 뒤,
+  // 로컬에만 있던 최신 항목을 밀어올린다(push) — 양방향 화해.
+  syncStarted = true;
+  pullNow().then(pushNow);
 }
 
 init().catch((err) => {
@@ -695,3 +866,19 @@ window.addEventListener("resize", () => {
   if (!el.answerModal.hidden) renderAnswer();
   else if (state.viewMode === "reflow") renderReflow(state.currentPage);
 });
+
+// 다른 기기에서 바꾼 걸 반영하려고, 창이 다시 보이거나 포커스될 때 서버에서 pull한다
+// (폴링은 안 함 — 다시 볼 때만 가볍게 당겨온다). 짧은 디바운스로 중복 호출을 줄인다.
+let focusPullTimer = null;
+function scheduleFocusPull() {
+  if (!syncStarted) return;
+  if (focusPullTimer) clearTimeout(focusPullTimer);
+  focusPullTimer = setTimeout(() => {
+    focusPullTimer = null;
+    pullNow();
+  }, 300);
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") scheduleFocusPull();
+});
+window.addEventListener("focus", scheduleFocusPull);

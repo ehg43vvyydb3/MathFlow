@@ -18,3 +18,8 @@ system_context.txt
 # 뽑은 좌표라 마찬가지로 제외한다.
 editor/output/
 shared/schema/examples/
+
+# 서버가 파이에 두는 런타임 데이터(편집기가 rsync로 밀어넣는 책 콘텐츠 +
+# 기기 간 동기화 상태 sync.db). 리포에 들어갈 게 아니다 — 로컬에서 서버를
+# 돌려 생기더라도 커밋하지 않는다.
+server/data/

@@ -141,8 +141,8 @@ server/            FastAPI 서버 소스 (파이의 ~/apps/mathflow-server 로 r
       실제 API 응답까지 확인함
 - [x] 웹 뷰어 (빌드 없는 순수 HTML/JS, `server/client/`): 원본 보기(네이티브 핀치줌),
       스마트 리플로우(블록 이미지를 따로 안 만들고 CSS background-crop으로 재배치),
-      페이지 이동, 단원 이동, 북마크·즐겨찾기·최근 페이지(전부 localStorage —
-      서버 DB 아직 없음, 기기 간 동기화 안 됨), 좌우 화살표 키 페이지 이동.
+      페이지 이동, 단원 이동, 북마크·즐겨찾기·최근 페이지(localStorage 원장 +
+      서버 동기화로 기기 간 공유 — 아래 "기기 간 동기화" 항목), 좌우 화살표 키 페이지 이동.
       `/viewer` 경로로 서빙, Ⅰ-1 단원(10~32쪽) 전체 전송 완료.
       접속: `http://pi.taildae7bd.ts.net:5020/viewer/` (tailnet 필요)
 - [x] "Ⅰ-1. 평면좌표" 단원 전체 diff 재분석 → 아이콘 배지(필수/확인체크) 색상
@@ -151,8 +151,8 @@ server/            FastAPI 서버 소스 (파이의 ~/apps/mathflow-server 로 r
       **미완료 → 완료(초록 ✓) → 중요(주황 ★)** 3단계 순환. localStorage에
       `{"페이지:문제순번": "done"|"important"}`로 저장(block.id 드리프트 회피 —
       순번 key). 처음엔 2단계(배열 저장)였고, 3단계로 늘리며 오브젝트로 바꾸되
-      로드 시 예전 배열은 전부 done으로 마이그레이션한다. 기기별·서버 동기화 없음
-      (2026-07-13, 3단계 확장 2026-07-14)
+      로드 시 예전 배열은 전부 done으로 마이그레이션한다.
+      (2026-07-13, 3단계 확장 2026-07-14, 이후 기기 간 동기화 대상에 편입 2026-07-15)
 - [x] 답지(정답·해설) 보기: 답지 PDF(별도 파일)를 `build_answers.py`가 webp+매핑
       (`answers.json`: "본책 X~Y쪽" 헤더 OCR→교재페이지→답지페이지)으로 빌드,
       서버가 `/book/{id}/answers`·`/answer/{n}` 서빙, 뷰어 하단 "답 보기" →
@@ -177,7 +177,20 @@ server/            FastAPI 서버 소스 (파이의 ~/apps/mathflow-server 로 r
 - [ ] "Ⅰ-3. 원의 방정식" 단원(65~96쪽) 분석·보정 시작 — 경계 수정으로 65쪽(구:
       Ⅰ-2 마지막 페이지로 오분류돼 있던 Ⅰ-3 표지)부터 새로 열림
 - [ ] problem 그룹핑 (문제번호 ↔ 소속 블록 연결, pages.json의 problems 채우기)
-- [ ] 서버: SQLite로 북마크·즐겨찾기·학습기록 (지금은 정적 파일 서빙만)
+- [x] 기기 간 동기화 (사용자 상태 SQLite): 뷰어의 모든 사용자 상태(문제표시·
+      즐겨찾기·북마크·최근·마지막페이지·답지분할선)를 항목 단위 Last-Write-Wins
+      맵으로 관리. 각 항목 {v, t(ms), d(tombstone)}, 더 최신 t가 이김 — 두 기기가
+      서로 다른 항목을 바꾸면 둘 다 살아남고 같은 항목은 나중 것이 이긴다. 서버는
+      `data/sync.db`(SQLite/WAL)에 `/book/{id}/state` GET(전체 원장)·POST(LWW 병합
+      후 병합본 반환)로만 노출 — 콘텐츠는 여전히 읽기 전용(`server/sync_store.py`).
+      뷰어는 로컬 localStorage 원장에 저장하면서 변경 시 push(디바운스), 로드·창
+      포커스 시 pull. 오프라인이면 로컬만으로 동작하고 연결되면 자동 밀어올림.
+      기존 localStorage 키(favorites/bookmarks/recent/solved/answerSplits/lastPage)는
+      최초 로드 때 원장으로 이관. sync.db는 편집기 rsync(--exclude=* 화이트리스트)·
+      코드 배포 rsync(--exclude data) 둘 다 안 건드려 배포/전송에도 보존.
+      검증: 실제 app.js를 vm에 로드한 Node 테스트(36건) + FastAPI TestClient
+      엔드포인트/LWW 테스트(17건) (2026-07-15)
+- [ ] 서버: 학습 통계·오답노트 등 심화 기록 (기본 동기화는 위에서 완료)
 - [ ] 웹 뷰어 (페이지 보기, 블록 보기, 스마트 리플로우, 문제 단위 이동)
 
 ## 향후 확장 (원 계획서에서)
