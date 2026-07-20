@@ -37,6 +37,23 @@
   <button id="btn-answer" class="answer-btn" hidden>답 보기</button>
 </nav>
 
+<div id="selection-bar" class="selection-bar" hidden>
+  <span class="selection-label">블록 선택됨</span>
+  <button id="btn-copy-block" class="selection-copy-btn">📋 복사</button>
+  <button id="btn-deselect-block" class="selection-close-btn" aria-label="선택 해제">✕</button>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<div id="copy-fallback-modal" class="copy-fallback-modal" hidden>
+  <div class="copy-fallback-backdrop"></div>
+  <div class="copy-fallback-panel">
+    <p class="copy-fallback-hint">자동 복사가 지원되지 않는 환경이에요. 이미지를 길게 눌러 복사하거나 저장하세요.</p>
+    <img id="copy-fallback-img" class="copy-fallback-img" alt="선택한 블록 이미지" />
+    <button id="copy-fallback-close" class="reveal-btn">닫기</button>
+  </div>
+</div>
+
 <div id="answer-modal" class="answer-modal" hidden>
   <div class="answer-backdrop"></div>
   <div class="answer-panel">

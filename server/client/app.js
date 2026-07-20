@@ -48,6 +48,7 @@ const state = {
   currentPage: 1,
   unit: UNITS[0], // 뷰어도 편집기처럼 단원 단위로 열어서 본다 — 페이지 이동은 이 단원 범위 안에서만
   viewMode: "reflow", // "image" | "reflow"
+  selectedBlockId: null, // 리플로우에서 탭으로 고른 블록(복사용) — 페이지 이동 시 초기화, 동기화 대상 아님
   answers: null, // answers.json { count, page_w, page_h, page_map } — 답지 없는 책이면 null
   answerPage: 1, // 답지 모달에서 현재 보고 있는 답지 페이지(1-indexed)
   answerMode: "split", // "split"(2단 세로 분할) | "full"(통짜 페이지)
@@ -391,6 +392,13 @@ const el = {
   answerAdjust: document.getElementById("answer-adjust"),
   answerSplit: document.getElementById("answer-split"),
   answerSplitReset: document.getElementById("answer-split-reset"),
+  selectionBar: document.getElementById("selection-bar"),
+  btnCopyBlock: document.getElementById("btn-copy-block"),
+  btnDeselectBlock: document.getElementById("btn-deselect-block"),
+  toast: document.getElementById("toast"),
+  copyFallbackModal: document.getElementById("copy-fallback-modal"),
+  copyFallbackImg: document.getElementById("copy-fallback-img"),
+  copyFallbackClose: document.getElementById("copy-fallback-close"),
 };
 
 // ---------- 렌더링 ----------
@@ -405,15 +413,20 @@ function renderPageImage(page) {
   };
 }
 
+// blockId -> 화면에 그려진 대표 엘리먼트(선택 하이라이트/복사용). renderReflow가 매번 새로 채운다.
+let reflowBlockEls = new Map();
+
 function renderReflow(page) {
   const meta = state.pagesByNumber.get(page);
   el.reflowView.innerHTML = "";
+  reflowBlockEls = new Map();
 
   if (!meta || !meta.block_order || meta.block_order.length === 0) {
     const p = document.createElement("p");
     p.className = "empty-hint";
     p.textContent = "이 페이지는 아직 블록 분석이 없습니다. 원본 보기를 이용하세요.";
     el.reflowView.appendChild(p);
+    updateSelectionBar();
     return;
   }
 
@@ -473,6 +486,7 @@ function renderReflow(page) {
         lineDiv.classList.add("rline");
         group.appendChild(lineDiv);
       }
+      wireBlockSelection(group, block.id);
       el.reflowView.appendChild(group);
       continue;
     }
@@ -482,6 +496,7 @@ function renderReflow(page) {
     if (layout.mode === "full" && w * fullW < containerW) {
       div.style.margin = "0 auto 22px"; // 상한에 걸려 폭을 못 채운 경우 가운데 정렬
     }
+    wireBlockSelection(div, block.id);
 
     // 문제 번호에는 옆에 "풀었음" 토글을 붙여 한 줄로 감싼다.
     if (isProblem) {
@@ -490,6 +505,30 @@ function renderReflow(page) {
       el.reflowView.appendChild(div);
     }
   }
+  updateSelectionBar();
+}
+
+/** 블록의 대표 엘리먼트에 탭-선택(복사용)을 연결하고 조회용 맵에 등록한다. */
+function wireBlockSelection(target, blockId) {
+  target.classList.toggle("selected", state.selectedBlockId === blockId);
+  target.onclick = () => toggleBlockSelection(blockId);
+  reflowBlockEls.set(blockId, target);
+}
+
+/** 같은 블록을 다시 탭하면 선택 해제, 다른 블록이면 갈아탄다. */
+function toggleBlockSelection(blockId) {
+  const prevEl = state.selectedBlockId && reflowBlockEls.get(state.selectedBlockId);
+  if (prevEl) prevEl.classList.remove("selected");
+
+  state.selectedBlockId = state.selectedBlockId === blockId ? null : blockId;
+
+  const curEl = state.selectedBlockId && reflowBlockEls.get(state.selectedBlockId);
+  if (curEl) curEl.classList.add("selected");
+  updateSelectionBar();
+}
+
+function updateSelectionBar() {
+  el.selectionBar.hidden = state.viewMode !== "reflow" || !state.selectedBlockId;
 }
 
 /** problem_number 크롭 옆에 3단계(미완료/완료/중요) 표시 토글을 붙인 한 줄. */
@@ -534,6 +573,82 @@ function cropDiv(imgUrl, pageW, pageH, bbox, scale, extraClass) {
   return div;
 }
 
+// ---------- 선택한 블록 클립보드 복사 ----------
+// 화면의 CSS 배경 크롭은 표시용 배율이라 해상도가 들쭉날쭉하다 — 복사할 땐 페이지
+// 원본 이미지를 다시 불러와 bbox 그대로 캔버스에 그려서 원본 해상도를 그대로 쓴다.
+
+function loadImage(url) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("페이지 이미지를 불러오지 못했습니다"));
+    img.src = url;
+  });
+}
+
+async function buildBlockCanvas(block, page) {
+  const img = await loadImage(pageImageUrl(page));
+  const [x, y, w, h] = block.bbox;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(w * img.naturalWidth));
+  canvas.height = Math.max(1, Math.round(h * img.naturalHeight));
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(
+    img,
+    x * img.naturalWidth, y * img.naturalHeight, w * img.naturalWidth, h * img.naturalHeight,
+    0, 0, canvas.width, canvas.height
+  );
+  return canvas;
+}
+
+let toastTimer = null;
+function showToast(msg) {
+  el.toast.textContent = msg;
+  el.toast.hidden = false;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    el.toast.hidden = true;
+  }, 1800);
+}
+
+function showCopyFallback(dataUrl) {
+  el.copyFallbackImg.src = dataUrl;
+  el.copyFallbackModal.hidden = false;
+}
+function closeCopyFallback() {
+  el.copyFallbackModal.hidden = true;
+}
+
+// Async Clipboard API(이미지 write)는 보안 컨텍스트(HTTPS/localhost)에서만 동작한다.
+// 이 뷰어는 Tailscale 위 순수 HTTP로도 열리므로, 실패하면 실제 <img>를 모달에 띄워
+// OS 기본 "길게 눌러 복사/저장" 메뉴로 대체한다(HTTP에서도 그대로 동작).
+async function copySelectedBlock() {
+  const blockId = state.selectedBlockId;
+  const block = blockId && state.blocksById.get(blockId);
+  if (!block) return;
+
+  let canvas;
+  try {
+    canvas = await buildBlockCanvas(block, state.currentPage);
+  } catch (err) {
+    console.warn("블록 이미지 생성 실패:", err.message);
+    showToast("이미지를 만들지 못했어요");
+    return;
+  }
+
+  try {
+    if (!navigator.clipboard || !window.ClipboardItem) throw new Error("Clipboard API 미지원");
+    const blob = await new Promise((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("PNG 변환 실패"))), "image/png")
+    );
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+    showToast("이미지를 클립보드에 복사했어요");
+  } catch (err) {
+    console.warn("클립보드 복사 실패, 대체 화면으로 전환:", err.message);
+    showCopyFallback(canvas.toDataURL("image/png"));
+  }
+}
+
 function renderCurrent() {
   const page = state.currentPage;
   const unitShort = state.unit.title.split(".")[0]; // "Ⅰ-1. 평면좌표" -> "Ⅰ-1"
@@ -559,11 +674,13 @@ function setViewMode(mode) {
   el.pageView.hidden = mode !== "image";
   el.reflowView.hidden = mode !== "reflow";
   renderCurrent();
+  updateSelectionBar();
 }
 
 function goToPage(page) {
   page = Math.max(state.unit.start, Math.min(state.unit.end, page));
   state.currentPage = page;
+  state.selectedBlockId = null; // 페이지가 바뀌면 이전 페이지 블록 선택은 의미가 없다
   pushRecent(page);
   renderCurrent();
   renderDrawerLists();
@@ -808,6 +925,11 @@ el.unitSelect.onchange = () => {
     closeDrawer();
   }
 };
+
+el.btnCopyBlock.onclick = () => copySelectedBlock();
+el.btnDeselectBlock.onclick = () => toggleBlockSelection(state.selectedBlockId);
+el.copyFallbackClose.onclick = closeCopyFallback;
+el.copyFallbackModal.querySelector(".copy-fallback-backdrop").onclick = closeCopyFallback;
 
 // ---------- 초기화 ----------
 
