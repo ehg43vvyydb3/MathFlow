@@ -190,6 +190,24 @@ server/            FastAPI 서버 소스 (파이의 ~/apps/mathflow-server 로 r
       코드 배포 rsync(--exclude data) 둘 다 안 건드려 배포/전송에도 보존.
       검증: 실제 app.js를 vm에 로드한 Node 테스트(36건) + FastAPI TestClient
       엔드포인트/LWW 테스트(17건) (2026-07-15)
+- [x] 웹 뷰어 리플로우 블록 복사: 리플로우에서 블록을 탭하면 파란 테두리로 선택되고
+      하단 액션 바(복사/해제)가 뜬다. "복사"는 페이지 원본 이미지에서 bbox 그대로
+      캔버스에 다시 그려(표시 배율과 무관하게 원본 해상도) PNG로 클립보드에 쓴다.
+      Async Clipboard API는 보안 컨텍스트(HTTPS/localhost)에서만 동작하므로, 파이가
+      순수 HTTP로 서빙하는 tailnet 환경에서는 실패한다 — 이때는 잘라낸 이미지를 실제
+      <img>로 모달에 띄워 OS 기본 "길게 눌러 복사/저장"으로 대체(HTTP에서도 동작).
+      검증: Playwright로 선택/복사(보안 컨텍스트, clipboard.read로 image/png 확인)와
+      폴백(clipboard.write 강제 실패) 양쪽 실측. 실제 폰(Firefox/HTTP)에서 폴백 확인
+      (2026-07-20)
+- [x] 편집기 리플로우 미리보기 도크(단축키 P): 폰 뷰어의 리플로우 화면을 편집기 안에
+      그대로 재현 — 서버 전송·폰 확인 없이 타입변경/병합/삭제/새 블록/연결의 리플로우
+      결과를 즉시 본다. app.js의 ROLE_LAYOUT/MAX_SCALE/읽기순서(_reading_order_key +
+      _apply_attachments)를 Qt로 옮겨 순서·배율을 동일하게 맞춤(코드 공유 수단 없어
+      손으로 동기화 — 뷰어 값 바꾸면 review_window.py도 같이). 편집(_mark_dirty)마다
+      갱신. 도크 resize 재계산은 QTimer 디바운스로 미룸 — resize 콜백 안에서 곧바로
+      재빌드하면 도크 레이아웃 재협상과 얽혀 CPU 100%로 수십 분 멈추는 사례를 실측해
+      고침. 검증: 헤드리스(cocoa) 렌더 개수/읽기순서가 pages.json block_order와 정확히
+      일치, resize/페이지이동/hide-show/빠른 연속 resize 무행(無hang) (2026-07-20)
 - [ ] 서버: 학습 통계·오답노트 등 심화 기록 (기본 동기화는 위에서 완료)
 - [ ] 웹 뷰어 (페이지 보기, 블록 보기, 스마트 리플로우, 문제 단위 이동)
 

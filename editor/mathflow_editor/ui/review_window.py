@@ -14,13 +14,14 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QAction, QBrush, QColor, QImage, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QDockWidget,
     QFrame,
     QGraphicsItem,
     QGraphicsLineItem,
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
     QGraphicsRectItem,
     QGraphicsScene,
     QGraphicsView,
+    QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -35,6 +37,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QProgressDialog,
+    QScrollArea,
     QSpinBox,
     QToolButton,
     QVBoxLayout,
@@ -144,6 +147,23 @@ def _apply_attachments(entries: list[dict]) -> list[dict]:
         if _attach_target(e) and id(e) not in placed:
             result.append(e)
     return result
+
+
+# ---------- 리플로우 미리보기 ----------
+# server/client/app.js의 ROLE_LAYOUT/MAX_SCALE/TEXT_MAX_SCALE을 그대로 옮긴 것 —
+# 둘 사이에 코드 공유 수단이 없어(편집기는 Python/Qt, 뷰어는 브라우저 JS) 손으로
+# 맞춰준다. 뷰어 쪽 값을 바꾸면 여기도 같이 바꿔야 한다.
+_REFLOW_ROLE_LAYOUT = {
+    "label": ("auto", 26),
+    "paragraph": ("full", None),
+    "equation": ("full", None),
+    "figure": ("full", None),
+    "table": ("full", None),
+    "page_number": ("auto", 22),
+}
+_REFLOW_MAX_SCALE = 2.0
+_REFLOW_TEXT_MAX_SCALE = 3.2
+_REFLOW_PADDING_PX = 14  # app.js reflow-view의 좌우 padding(14px)과 동일
 
 
 def _build_legend_html() -> str:
@@ -392,6 +412,10 @@ class ReviewWindow(QMainWindow):
             self.current_page = page_range.start
         self._page_w = 0
         self._page_h = 0
+        self._current_page_img: np.ndarray | None = None  # 리플로우 미리보기 크롭용
+        self._dock_sized = False  # 리플로우 도크 초기 폭은 최초 show 때 한 번만 지정
+        self._reflow_refreshing = False  # 재진입 가드(재계산 중 resize가 다시 걸리는 경우 대비)
+        self._reflow_last_width = None  # 뷰포트 폭이 실제로 안 바뀌었으면 재계산을 건너뛴다
         self.dirty = False  # 마지막 저장 이후 아직 저장 안 된 변경이 있는지
 
         self._build_ui()
@@ -414,6 +438,7 @@ class ReviewWindow(QMainWindow):
         self._build_menus()
         self._build_toolbar()
         self._build_type_shortcuts()
+        self._build_reflow_panel()
 
         # 버튼 행(FlowLayout)을 뷰 위에 세로로 쌓는다 — QToolBar를 여러 개
         # addToolBar()로 나열하면 창이 좁아져도 줄바꿈이 안 되고 창 자체의
@@ -543,6 +568,182 @@ class ReviewWindow(QMainWindow):
             action.setShortcut(key)
             action.triggered.connect(lambda checked=False, t=block_type: self._set_selected_type(t))
             self.addAction(action)
+
+    def _build_reflow_panel(self) -> None:
+        """폰 뷰어의 리플로우 화면을 그대로 흉내내는 미리보기 도크.
+
+        타입 변경/병합/삭제/새 블록/리사이즈/블록 연결 등 리플로우 순서나 배치에
+        영향을 주는 편집을 할 때마다 _mark_dirty()에서 같이 갱신된다 — 파이 서버로
+        전송하거나 폰을 꺼내 확인하지 않고도 바로 이 창에서 결과를 볼 수 있다.
+        """
+        self.reflow_dock = QDockWidget("리플로우 미리보기", self)
+        self.reflow_dock.setObjectName("reflow_dock")
+
+        self.reflow_scroll = QScrollArea()
+        self.reflow_scroll.setWidgetResizable(True)
+        # 세로 스크롤바를 항상 켜둔다 — 자동 표시/숨김이면 내용 높이가 배율에 따라
+        # 바뀔 때 스크롤바가 나타났다 사라지며 뷰포트 폭까지 흔들려서, resize→재계산
+        # 회차마다 폭이 달라진다. 폭을 고정해두면 아래 eventFilter의 "폭 안 바뀌면
+        # 건너뜀" 가드가 실제로 먹혀 불필요한 재계산이 확 준다(무한 재계산 자체를
+        # 막는 건 타이머 디바운스 쪽 — _build_reflow_panel 타이머 주석 참고).
+        self.reflow_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self.reflow_content = QWidget()
+        self.reflow_layout = QVBoxLayout(self.reflow_content)
+        self.reflow_layout.setContentsMargins(_REFLOW_PADDING_PX, 16, _REFLOW_PADDING_PX, 40)
+        self.reflow_layout.setSpacing(0)
+        self.reflow_scroll.setWidget(self.reflow_content)
+
+        self.reflow_dock.setWidget(self.reflow_scroll)
+        self.reflow_dock.setMinimumWidth(280)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.reflow_dock)
+
+        # 도크 크기 변경(뷰포트 폭 변경)에 맞춰 배율을 다시 계산해야 한다
+        # (app.js가 window resize에서 renderReflow를 다시 부르는 것과 동일한 이유).
+        # 단, resize 이벤트 콜백 안에서 곧바로 무거운 재계산(위젯 수십 개 새로 생성)을
+        # 돌리면 QMainWindow의 도크 레이아웃 협상이 아직 안 끝난 도중에 끼어들어 —
+        # 재계산이 reflow_content의 sizeHint를 바꾸고, 그게 다시 도크 레이아웃 재협상을
+        # 유발하고, 그 안에서 또 resize가 걸리는 식으로 — 실측 CPU 100%로 수십 분간
+        # 멈추는 사례가 재현됐다(offscreen/cocoa 플랫폼 둘 다 동일). 재계산을 타이머로
+        # 미뤄 resize 콜백의 호출 스택 밖(다음 이벤트 루프 턴)에서 돌리면 이 경합이
+        # 원천적으로 끊긴다 — 웹에서 resize 핸들러를 디바운스하는 것과 같은 이유.
+        self._reflow_resize_timer = QTimer(self)
+        self._reflow_resize_timer.setSingleShot(True)
+        self._reflow_resize_timer.timeout.connect(self._refresh_reflow_preview)
+        self.reflow_scroll.viewport().installEventFilter(self)
+        # 숨겨져 있을 땐 갱신을 건너뛰므로, 다시 보이게 될 때 한 번 채워줘야 한다.
+        self.reflow_dock.visibilityChanged.connect(
+            lambda visible: self._refresh_reflow_preview() if visible else None
+        )
+
+        toggle_action = self.reflow_dock.toggleViewAction()
+        toggle_action.setText("리플로우 미리보기 (P)")
+        toggle_action.setShortcut("P")
+        self._toolbar_layout.addWidget(self._make_tool_button(toggle_action))
+
+    def _make_crop_label(self, bbox: list[float], page_w: int, page_h: int, scale: float) -> QLabel:
+        """페이지 원본 이미지에서 bbox(정규화 좌표) 영역을 scale 배율로 잘라 QLabel에 담는다."""
+        label = QLabel()
+        img = self._current_page_img
+        if img is None:
+            return label
+        x, y, w, h = bbox
+        x0 = max(0, min(page_w, round(x * page_w)))
+        y0 = max(0, min(page_h, round(y * page_h)))
+        x1 = max(x0, min(page_w, round((x + w) * page_w)))
+        y1 = max(y0, min(page_h, round((y + h) * page_h)))
+        if x1 <= x0 or y1 <= y0:
+            return label
+        crop = img[y0:y1, x0:x1]
+        out_w = max(1, round((x1 - x0) * scale))
+        out_h = max(1, round((y1 - y0) * scale))
+        interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR
+        resized = cv2.resize(crop, (out_w, out_h), interpolation=interp)
+        label.setPixmap(_cv_to_qpixmap(resized))
+        return label
+
+    def _refresh_reflow_preview(self) -> None:
+        """현재 페이지를 app.js의 renderReflow와 같은 규칙으로 다시 그린다.
+
+        숨겨져 있을 때(도크가 안 보일 때)는 건너뛴다 — 편집 중 매 저장/타입변경마다
+        불려서, 안 보이는 위젯을 매번 다시 그리는 건 낭비다. 다시 보이게 되면
+        visibilityChanged 핸들러가 한 번 더 불러준다.
+
+        재진입 가드: 재빌드 자체가 레이아웃 크기를 바꿔 resize 이벤트를 다시
+        유발할 수 있다(스크롤바는 always-on으로 고정해서 주 원인은 막았지만,
+        보험으로 한 번 더 막아둔다) — 이미 갱신 중이면 그 결과를 기다리지 않고
+        그냥 무시한다.
+        """
+        if not self.reflow_dock.isVisible() or self._reflow_refreshing:
+            return
+        self._reflow_refreshing = True
+        try:
+            self._rebuild_reflow_preview()
+        finally:
+            self._reflow_refreshing = False
+
+    def _rebuild_reflow_preview(self) -> None:
+        while self.reflow_layout.count():
+            item = self.reflow_layout.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                # takeAt()은 레이아웃에서만 빼낼 뿐 reflow_content의 자식 트리에서는
+                # 안 빠진다 — deleteLater()만 걸면 다음 이벤트 루프 턴 전까지 그대로
+                # 자식으로 남는다. 리사이즈 한 번에 재계산이 연달아 여러 번 걸리면
+                # (실측: 도크 리사이즈 한 번에 5~6연타) 안 지워진 옛 위젯들이 계속
+                # 쌓여서 회차마다 자식 수가 불어나고, 결국 레이아웃 계산이 극도로
+                # 느려지는 걸 실제로 겪었다(CPU 100%로 수십 분). setParent(None)으로
+                # 즉시 자식 트리에서 떼어내야 다음 회차가 이 누적의 영향을 안 받는다.
+                w.setParent(None)
+                w.deleteLater()
+
+        img = self._current_page_img
+        entries = self.pages_blocks.get(self.current_page, [])
+        if img is None or not entries:
+            hint = QLabel("이 페이지에는 블록이 없습니다.\n(도구 → 새로 캐싱으로 분석하세요)")
+            hint.setWordWrap(True)
+            hint.setStyleSheet("color: #888; padding: 20px;")
+            self.reflow_layout.addWidget(hint)
+            self.reflow_layout.addStretch(1)
+            return
+
+        page_h, page_w = img.shape[:2]
+        viewport_w = self.reflow_scroll.viewport().width() or 360
+        self._reflow_last_width = viewport_w
+        container_w = max(160, viewport_w - 2 * _REFLOW_PADDING_PX)
+
+        ordered = _apply_attachments(sorted(entries, key=lambda e: _reading_order_key(e["block"])))
+
+        for e in ordered:
+            block = e["block"]
+            role = (block.get("reflow") or {}).get("role") or "paragraph"
+            mode, target_h = _REFLOW_ROLE_LAYOUT.get(role, _REFLOW_ROLE_LAYOUT["paragraph"])
+            max_scale = _REFLOW_TEXT_MAX_SCALE if role == "paragraph" else _REFLOW_MAX_SCALE
+            x, y, w, h = block["bbox"]
+            lines = block.get("lines") if role in ("paragraph", "equation") else None
+
+            if mode == "auto":
+                scale = target_h / (h * page_h) if h > 0 else 1.0
+            elif lines:
+                max_line_w = max(ln["bbox"][2] for ln in lines)
+                scale = container_w / (max_line_w * page_w) if max_line_w > 0 else 1.0
+            else:
+                scale = container_w / (w * page_w) if w > 0 else 1.0
+            scale = min(scale, max_scale)
+
+            if lines:
+                group = QWidget()
+                group_layout = QVBoxLayout(group)
+                group_layout.setContentsMargins(0, 0, 0, 0)
+                group_layout.setSpacing(9)
+                for ln in lines:
+                    group_layout.addWidget(self._make_crop_label(ln["bbox"], page_w, page_h, scale))
+                self.reflow_layout.addWidget(group)
+                self.reflow_layout.addSpacing(24)
+                continue
+
+            crop_label = self._make_crop_label(block["bbox"], page_w, page_h, scale)
+            if role == "label":
+                crop_label.setStyleSheet(
+                    "background-color: #eef2ff; border: 1px solid #6366f1;"
+                    "border-radius: 6px; padding: 3px 10px;"
+                )
+
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+            full_w_px = page_w * scale
+            if mode == "full" and w * full_w_px < container_w:
+                # 확대 상한에 걸려 폭을 못 채운 경우 가운데 정렬(app.js와 동일).
+                row.addStretch(1)
+                row.addWidget(crop_label)
+                row.addStretch(1)
+            else:
+                row.addWidget(crop_label)
+                row.addStretch(1)
+            self.reflow_layout.addWidget(row_widget)
+            self.reflow_layout.addSpacing(12 if role == "label" else 24)
+
+        self.reflow_layout.addStretch(1)
 
     def _build_menus(self) -> None:
         # Qt는 부모가 소유하면 살아있어야 하지만, PySide6에서 로컬 변수로만 들고 있으면
@@ -884,6 +1085,7 @@ class ReviewWindow(QMainWindow):
         img = segment.render_page(self.pdf_path, page_number - 1, 150)
         h, w = img.shape[:2]
         self._page_w, self._page_h = w, h
+        self._current_page_img = img
         self.pages_wh[page_number] = (w, h)
 
         self._cancel_attach()  # 페이지가 바뀌면 진행 중이던 지정 모드는 취소
@@ -909,6 +1111,7 @@ class ReviewWindow(QMainWindow):
 
         self._fit_page()
         self._update_status()
+        self._refresh_reflow_preview()
 
     def _fit_page(self) -> None:
         """페이지 가로 폭을 뷰에 꽉 채운다(세로는 스크롤). 창 크기 변경 시 재호출."""
@@ -924,6 +1127,12 @@ class ReviewWindow(QMainWindow):
     def eventFilter(self, obj, event) -> bool:
         if obj is self.view.viewport() and event.type() == event.Type.Resize:
             self._place_legend()
+        elif obj is self.reflow_scroll.viewport() and event.type() == event.Type.Resize:
+            # 폭이 실제로 안 바뀌었으면 타이머도 새로 걸지 않는다. 재계산 자체를
+            # 타이머로 미루는 이유는 _build_reflow_panel의 타이머 생성부 주석 참고.
+            width = self.reflow_scroll.viewport().width()
+            if width != self._reflow_last_width:
+                self._reflow_resize_timer.start(120)
         return super().eventFilter(obj, event)
 
     def _place_legend(self) -> None:
@@ -942,6 +1151,13 @@ class ReviewWindow(QMainWindow):
         # 생성자 시점엔 뷰 크기가 확정 전이라 여기서 다시 맞춰야 실제 창 크기에 맞는다.
         self._fit_page()
         self._place_legend()
+        if not self._dock_sized:
+            # 폰 화면 폭 정도(~380px)를 기본값으로 — 그래야 리플로우 미리보기가
+            # 실제 폰 뷰어와 비슷한 폭에서 시작한다. 창이 최소화됐다 복원될 때마다
+            # 다시 좁아지면 안 되니 최초 1회만 적용한다.
+            self.resizeDocks([self.reflow_dock], [380], Qt.Orientation.Horizontal)
+            self._dock_sized = True
+        self._refresh_reflow_preview()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -961,6 +1177,7 @@ class ReviewWindow(QMainWindow):
 
     def _mark_dirty(self) -> None:
         self.dirty = True
+        self._refresh_reflow_preview()
 
     def _confirm_discard_or_save(self) -> bool:
         """저장 안 된 변경이 있으면 저장/저장 안 함/취소를 묻는다. 진행해도 되면 True."""
