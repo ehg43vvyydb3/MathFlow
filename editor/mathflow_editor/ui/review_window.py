@@ -588,6 +588,12 @@ class ReviewWindow(QMainWindow):
         # 막는 건 타이머 디바운스 쪽 — _build_reflow_panel 타이머 주석 참고).
         self.reflow_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         self.reflow_content = QWidget()
+        # 배경을 흰색으로 고정한다 — 폰 뷰어(style.css)와 같은 이유로, 스캔 교재
+        # 페이지가 거의 순백이라 시스템 다크모드의 어두운 배경 위에 흰 크롭이
+        # 뜨면 블록마다 테두리처럼 도드라져 부자연스럽다. ID 선택자로 이 위젯에만
+        # 걸어 자식(라벨 배지 등)의 자체 배경색까지 덮어쓰지 않게 한다.
+        self.reflow_content.setObjectName("reflow_content")
+        self.reflow_content.setStyleSheet("#reflow_content { background: #ffffff; }")
         self.reflow_layout = QVBoxLayout(self.reflow_content)
         self.reflow_layout.setContentsMargins(_REFLOW_PADDING_PX, 16, _REFLOW_PADDING_PX, 40)
         self.reflow_layout.setSpacing(0)
