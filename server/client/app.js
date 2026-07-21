@@ -496,12 +496,13 @@ function renderReflow(page) {
     if (layout.mode === "full" && w * fullW < containerW) {
       div.style.margin = "0 auto 22px"; // 상한에 걸려 폭을 못 채운 경우 가운데 정렬
     }
-    wireBlockSelection(div, block.id);
 
-    // 문제 번호에는 옆에 "풀었음" 토글을 붙여 한 줄로 감싼다.
+    // 문제 번호에는 옆에 "풀었음" 토글을 붙여 한 줄로 감싼다. 문제 번호 자체는
+    // 복사할 대상이 아니므로 탭-선택(복사) 대상에서 제외한다.
     if (isProblem) {
       el.reflowView.appendChild(problemRow(div, page, problemIdx));
     } else {
+      wireBlockSelection(div, block.id);
       el.reflowView.appendChild(div);
     }
   }
