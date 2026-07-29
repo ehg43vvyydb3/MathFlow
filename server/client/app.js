@@ -575,8 +575,10 @@ function cropDiv(imgUrl, pageW, pageH, bbox, scale, extraClass) {
 }
 
 // ---------- 선택한 블록 클립보드 복사 ----------
-// 화면의 CSS 배경 크롭은 표시용 배율이라 해상도가 들쭉날쭉하다 — 복사할 땐 페이지
-// 원본 이미지를 다시 불러와 bbox 그대로 캔버스에 그려서 원본 해상도를 그대로 쓴다.
+// 복사물은 리플로우 화면에 보이는 그대로여야 한다 — 원본 페이지 전체 해상도로
+// 통째 잘라내는 게 아니라, renderReflow와 똑같은 배율/줄 분리로 합성한다.
+// 그래서 문단·수식은 화면처럼 줄 단위로 쌓이고, 좁은 블록은 화면 폭에 맞춰
+// 확대된 모습으로 복사된다(배율은 현재 리플로우 컨테이너 폭 기준).
 
 function loadImage(url) {
   return new Promise((resolve, reject) => {
@@ -587,18 +589,73 @@ function loadImage(url) {
   });
 }
 
+// 줄 사이 간격(px) — style.css의 .rblock-group .rline { margin-bottom: 9px }와 동일.
+const COPY_LINE_GAP_PX = 9;
+
+// renderReflow가 이 블록에 쓰는 배율을 그대로 다시 구한다.
+function reflowScaleFor(block, pageW, pageH, hasLines) {
+  const role = (block.reflow && block.reflow.role) || "paragraph";
+  const layout = ROLE_LAYOUT[role] || ROLE_LAYOUT.paragraph;
+  const maxScale = role === "paragraph" ? TEXT_MAX_SCALE : MAX_SCALE;
+  const [, , w, h] = block.bbox;
+
+  const reflowStyle = getComputedStyle(el.reflowView);
+  const horizontalPadding = parseFloat(reflowStyle.paddingLeft) + parseFloat(reflowStyle.paddingRight);
+  const containerW = (el.reflowView.clientWidth || 320) - horizontalPadding;
+
+  let scale;
+  if (layout.mode === "auto") {
+    scale = layout.targetHeightPx / (h * pageH);
+  } else if (hasLines) {
+    const maxLineW = Math.max(...block.lines.map((ln) => ln.bbox[2]));
+    scale = containerW / (maxLineW * pageW);
+  } else {
+    scale = containerW / (w * pageW);
+  }
+  return Math.min(scale, maxScale);
+}
+
 async function buildBlockCanvas(block, page) {
   const img = await loadImage(pageImageUrl(page));
-  const [x, y, w, h] = block.bbox;
+  const meta = state.pagesByNumber.get(page);
+  const pageW = (meta && meta.width_px) || img.naturalWidth;
+  const pageH = (meta && meta.height_px) || img.naturalHeight;
+  // 소스 좌표는 실제 이미지 픽셀 기준으로 잡는다(메타 폭과 달라도 안전).
+  const nW = img.naturalWidth;
+  const nH = img.naturalHeight;
+
+  const role = (block.reflow && block.reflow.role) || "paragraph";
+  const hasLines =
+    (role === "paragraph" || role === "equation") &&
+    Array.isArray(block.lines) &&
+    block.lines.length > 0;
+  const scale = reflowScaleFor(block, pageW, pageH, hasLines);
+
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(w * img.naturalWidth));
-  canvas.height = Math.max(1, Math.round(h * img.naturalHeight));
   const ctx = canvas.getContext("2d");
-  ctx.drawImage(
-    img,
-    x * img.naturalWidth, y * img.naturalHeight, w * img.naturalWidth, h * img.naturalHeight,
-    0, 0, canvas.width, canvas.height
-  );
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+
+  // 잘라낼 조각들: hasLines면 줄마다 하나씩 세로로 쌓고, 아니면 블록 전체 하나.
+  const pieces = hasLines ? block.lines.map((ln) => ln.bbox) : [block.bbox];
+  const dims = pieces.map(([, , w, h]) => ({
+    w: Math.max(1, Math.round(w * pageW * scale)),
+    h: Math.max(1, Math.round(h * pageH * scale)),
+  }));
+  const gaps = COPY_LINE_GAP_PX * (pieces.length - 1);
+  canvas.width = Math.max(...dims.map((d) => d.w));
+  canvas.height = dims.reduce((s, d) => s + d.h, 0) + gaps;
+
+  // 리플로우 블록 배경(흰색)으로 먼저 채운다 — 줄 폭이 제각각이라 남는 여백이 생긴다.
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  let dy = 0;
+  pieces.forEach(([x, y, w, h], i) => {
+    const d = dims[i];
+    ctx.drawImage(img, x * nW, y * nH, w * nW, h * nH, 0, dy, d.w, d.h);
+    dy += d.h + COPY_LINE_GAP_PX;
+  });
   return canvas;
 }
 
