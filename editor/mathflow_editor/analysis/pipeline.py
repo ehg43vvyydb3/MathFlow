@@ -35,6 +35,9 @@ ROLE_BY_TYPE = {
 # 쪼개진 블록(len(line_boxes) > 1)은 각 줄이 이미 짧으니 대상에서 제외한다.
 WRAP_WIDTH_THRESHOLD = 332 / 1073
 
+# 줄 단위로 쪼개(reflow의 `lines`) 좁은 폭에서도 크게 보여줄 수 있는 타입.
+LINE_SPLIT_TYPES = ("text", "formula")
+
 
 class BlockCache:
     """블록 이미지 해시 -> VLM 분류 결과. 책 단위로 하나씩 둔다."""
@@ -58,6 +61,54 @@ def crop_png(img: np.ndarray, box: segment.Box) -> bytes:
     crop = img[box.y0 : box.y1, box.x0 : box.x1]
     ok, buf = cv2.imencode(".png", crop)
     return buf.tobytes()
+
+
+def compute_lines(
+    mask_lines: np.ndarray,
+    mask_words: np.ndarray,
+    box: segment.Box,
+    w: int,
+    h: int,
+) -> list[dict] | None:
+    """블록 하나의 reflow용 `lines`(줄 단위 bbox)를 계산한다. 없으면 None.
+
+    text/formula에만 쓴다 — figure/table은 줄 사이 2차원적 위치 관계 자체가
+    의미라 쪼개면 안 된다. formula는 분수·지수처럼 위험해 보이지만, 실제로는
+    분수 막대(또는 그 일부)가 해당 행에 잉크를 남기기 때문에 "행 전체가 거의
+    빈" 지점에서만 끊는 이 로직이 분수를 관통해서 자르는 일이 없음을 실제
+    블록(p24_bm14, p18_b08 등, 분수+설명문 혼합)으로 확인했다 — 여러 줄 유도
+    과정(=... =... ∴...)이 흔히 섞여 있어서 그 부분만이라도 줄 단위로 쌓으면
+    좁은 폭에서 더 크게 보여줄 수 있다.
+
+    run_page(자동 분석)와 편집기(병합·새 블록·리사이즈로 bbox가 바뀐 뒤 다시
+    계산)가 같은 규칙을 쓰도록 여기 한 군데에만 둔다 — 예전엔 run_page 안에만
+    있어서, 편집기에서 병합한 블록은 줄 정보를 영영 못 받았다(35쪽 p35_bm24
+    처럼 폭 0.72짜리 수식 덩어리가 통째로 화면 폭에 맞춰 축소돼 글자가 아주
+    작게 보이는 문제).
+    """
+    line_boxes = segment.detect_lines_in_box(mask_lines, box)
+    if len(line_boxes) > 1:
+        # 문단이 이미 여러 줄로 나뉘었어도, 그 줄 하나하나가 여전히 화면 폭
+        # 기준으로 너무 넓을 수 있다(15쪽 p15_b09, 3줄 중 앞 2줄이 폭
+        # 0.657·0.656 — 문단 전체가 아니라 개별 줄 단위로도 같은 검사를 해야
+        # 그 줄들이 마저 잘린다). 각 줄을 따로 확인해서 필요하면 2등분한다.
+        final_lines: list[segment.Box] = []
+        for lb in line_boxes:
+            if lb.norm(w, h)[2] > WRAP_WIDTH_THRESHOLD:
+                wrapped_line = segment.wrap_long_line(mask_words, lb)
+                if wrapped_line is not None:
+                    final_lines.extend(wrapped_line)
+                    continue
+            final_lines.append(lb)
+        return [{"bbox": fb.norm(w, h)} for fb in final_lines]
+    if box.norm(w, h)[2] > WRAP_WIDTH_THRESHOLD:
+        # 이미 여러 줄로 안 쪼개졌는데(=한 줄) 화면 폭 기준으로 너무 넓은 경우 —
+        # 자연스러운 단어 간격에서 억지로 2등분해서 각 반쪽이 더 크게 보이게
+        # 한다(12쪽 필수 12번 "두 점에서 ~ 점 Q의" 같은 사례).
+        wrapped = segment.wrap_long_line(mask_words, box)
+        if wrapped is not None:
+            return [{"bbox": wb.norm(w, h)} for wb in wrapped]
+    return None
 
 
 def _apply_type_rules(vlm_type: str, bbox_norm: list[float], img: np.ndarray, box: segment.Box) -> str:
@@ -167,37 +218,10 @@ def run_page(
             "confidence": cached["confidence"],
             "reflow": {"role": ROLE_BY_TYPE.get(block_type, "paragraph")},
         }
-        if block_type in ("text", "formula"):
-            # figure/table은 줄 사이 2차원적 위치 관계 자체가 의미라 쪼개면 안
-            # 된다. formula는 분수·지수처럼 위험해 보이지만, 실제로는 분수
-            # 막대(또는 그 일부)가 해당 행에 잉크를 남기기 때문에 "행 전체가
-            # 거의 빈" 지점에서만 끊는 이 로직이 분수를 관통해서 자르는 일이
-            # 없음을 실제 블록(p24_bm14, p18_b08 등, 분수+설명문 혼합)으로
-            # 확인했다 — 여러 줄 유도 과정(=... =... ∴...)이 흔히 섞여 있어서
-            # 그 부분만이라도 줄 단위로 쌓으면 좁은 폭에서 더 크게 보여줄 수 있다.
-            line_boxes = segment.detect_lines_in_box(mask_lines, box)
-            if len(line_boxes) > 1:
-                # 문단이 이미 여러 줄로 나뉘었어도, 그 줄 하나하나가 여전히 화면
-                # 폭 기준으로 너무 넓을 수 있다(15쪽 p15_b09, 3줄 중 앞 2줄이 폭
-                # 0.657·0.656 — 문단 전체가 아니라 개별 줄 단위로도 같은 검사를
-                # 해야 그 줄들이 마저 잘린다). 각 줄을 따로 확인해서 필요하면
-                # 그 줄만 추가로 2등분한다.
-                final_lines: list[segment.Box] = []
-                for lb in line_boxes:
-                    if lb.norm(w, h)[2] > WRAP_WIDTH_THRESHOLD:
-                        wrapped_line = segment.wrap_long_line(mask_words, lb)
-                        if wrapped_line is not None:
-                            final_lines.extend(wrapped_line)
-                            continue
-                    final_lines.append(lb)
-                block["lines"] = [{"bbox": fb.norm(w, h)} for fb in final_lines]
-            elif box.norm(w, h)[2] > WRAP_WIDTH_THRESHOLD:
-                # 이미 여러 줄로 안 쪼개졌는데(=한 줄) 화면 폭 기준으로 너무 넓은
-                # 경우 — 자연스러운 단어 간격에서 억지로 2등분해서 각 반쪽이 더
-                # 크게 보이게 한다(12쪽 필수 12번 "두 점에서 ~ 점 Q의" 같은 사례).
-                wrapped = segment.wrap_long_line(mask_words, box)
-                if wrapped is not None:
-                    block["lines"] = [{"bbox": wb.norm(w, h)} for wb in wrapped]
+        if block_type in LINE_SPLIT_TYPES:
+            lines = compute_lines(mask_lines, mask_words, box, w, h)
+            if lines:
+                block["lines"] = lines
         # blocks.schema.json은 additionalProperties: false라 needs_review를
         # 블록 안에 못 넣는다 — 별도 래퍼로 감싸서 스키마 오염 없이 전달.
         results.append({"block": block, "needs_review": bool(cached.get("needs_review"))})

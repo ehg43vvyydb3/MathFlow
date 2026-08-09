@@ -118,6 +118,30 @@ def _block_center(block: dict, page_w: int, page_h: int) -> tuple[float, float]:
     return ((x + w / 2) * page_w, (y + h / 2) * page_h)
 
 
+def _block_box(block: dict, w: int, h: int) -> segment.Box | None:
+    """정규화 bbox → 픽셀 Box. 페이지 밖으로 나간 좌표는 자르고, 빈 상자면 None."""
+    x, y, bw, bh = block["bbox"]
+    x0, y0 = max(0, int(x * w)), max(0, int(y * h))
+    x1, y1 = min(w, int((x + bw) * w)), min(h, int((y + bh) * h))
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return segment.Box(x0, y0, x1, y1)
+
+
+def _refresh_block_lines(
+    block: dict, mask_lines: np.ndarray, mask_words: np.ndarray, w: int, h: int
+) -> bool:
+    """블록의 reflow용 lines를 지금 bbox/타입 기준으로 다시 계산한다. 바뀌면 True."""
+    before = block.get("lines")
+    box = _block_box(block, w, h) if block["type"] in pipeline.LINE_SPLIT_TYPES else None
+    lines = pipeline.compute_lines(mask_lines, mask_words, box, w, h) if box else None
+    if lines:
+        block["lines"] = lines
+    else:
+        block.pop("lines", None)
+    return block.get("lines") != before
+
+
 def _attach_target(entry: dict) -> str | None:
     return (entry["block"].get("reflow") or {}).get("attach_to")
 
@@ -221,7 +245,7 @@ class BlockItem(QGraphicsRectItem):
         self.page_w = page_w
         self.page_h = page_h
         self._resize_edges: str = ""  # 예: "L", "TR", "B"
-        self.on_dirty = None  # 리사이즈로 bbox가 바뀔 때 호출할 콜백 (ReviewWindow가 채워줌)
+        self.on_dirty = None  # 리사이즈로 bbox가 바뀔 때 호출할 콜백(self를 넘김, ReviewWindow가 채워줌)
         # 블록 연결(지정 모드 진입/해제) 콜백 — ReviewWindow가 채워준다.
         self.on_request_attach = None
         self.on_request_detach = None
@@ -333,7 +357,7 @@ class BlockItem(QGraphicsRectItem):
             r.height() / self.page_h,
         ]
         if self.on_dirty is not None:
-            self.on_dirty()
+            self.on_dirty(self)
 
 
 class PageView(QGraphicsView):
@@ -421,6 +445,11 @@ class ReviewWindow(QMainWindow):
         self._page_w = 0
         self._page_h = 0
         self._current_page_img: np.ndarray | None = None  # 리플로우 미리보기 크롭용
+        # 줄 재계산용 마스크(줄/단어). 한 장 만드는 데 ~0.9초라 페이지당 한 번만
+        # 만들고, 실제로 줄을 다시 계산해야 할 때(병합·새 블록·리사이즈·타입변경)
+        # 처음 필요해진 시점에 만든다 — 페이지 넘기기만 하는 동안은 만들지 않는다.
+        self._masks_page: int | None = None
+        self._masks: tuple[np.ndarray, np.ndarray] | None = None
         self._dock_sized = False  # 리플로우 도크 초기 폭은 최초 show 때 한 번만 지정
         self._reflow_refreshing = False  # 재진입 가드(재계산 중 resize가 다시 걸리는 경우 대비)
         self._reflow_last_width = None  # 뷰포트 폭이 실제로 안 바뀌었으면 재계산을 건너뛴다
@@ -774,6 +803,9 @@ class ReviewWindow(QMainWindow):
         )
         self.tools_menu.addAction("새로 캐싱: 완료 단원 → 다른 단원").triggered.connect(
             self._open_recache_cross_unit_dialog
+        )
+        self.tools_menu.addAction("줄 정보 다시 계산 (전체 페이지)").triggered.connect(
+            self._recompute_all_lines
         )
 
         self.transfer_menu = self.menuBar().addMenu("전송")
@@ -1251,7 +1283,11 @@ class ReviewWindow(QMainWindow):
         items = self._selected_items()
         for it in items:
             it.block["type"] = new_type
-            it.block["reflow"] = {"role": pipeline.ROLE_BY_TYPE.get(new_type, "paragraph")}
+            # reflow 딕셔너리를 통째로 갈아끼우면 같이 들어있는 attach_to(블록 연결)가
+            # 조용히 날아간다 — role만 바꾼다.
+            it.block.setdefault("reflow", {})["role"] = pipeline.ROLE_BY_TYPE.get(new_type, "paragraph")
+            # text↔figure처럼 "쪼개도 되는 타입"이 바뀌면 줄 정보도 같이 갱신한다.
+            self._refresh_lines(it.block)
             it.apply_style()
         if items:
             self._mark_dirty()
@@ -1280,6 +1316,88 @@ class ReviewWindow(QMainWindow):
             if m:
                 best = max(best, int(m.group(1)))
         return best + 1
+
+    # ---------- 줄(lines) 재계산 ----------
+
+    def _current_masks(self) -> tuple[np.ndarray, np.ndarray] | None:
+        """현재 페이지의 줄/단어 마스크. 페이지당 한 번만 계산해서 들고 있는다."""
+        if self._current_page_img is None:
+            return None
+        if self._masks is None or self._masks_page != self.current_page:
+            img = self._current_page_img
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)  # ~0.9초 걸린다
+            try:
+                self._masks = (segment.compute_mask_lines(img), segment.compute_mask_words(img))
+            finally:
+                QApplication.restoreOverrideCursor()
+            self._masks_page = self.current_page
+        return self._masks
+
+    def _refresh_lines(self, block: dict) -> None:
+        """bbox나 타입이 바뀐 블록의 reflow용 lines를 다시 계산한다.
+
+        병합·새 블록·리사이즈로 만들어진 블록은 자동 분석(run_page)을 안 거치니
+        여기서 채워주지 않으면 줄 정보가 영영 없다 — 그러면 뷰어가 블록 전체를
+        한 장으로 화면 폭에 맞춰 줄여서 글자가 아주 작아진다.
+        """
+        if block["type"] not in pipeline.LINE_SPLIT_TYPES:
+            block.pop("lines", None)  # figure/table 등은 쪼개면 안 된다
+            return
+        masks = self._current_masks()
+        if masks is None:
+            return
+        _refresh_block_lines(block, masks[0], masks[1], self._page_w, self._page_h)
+
+    def _on_block_resized(self, item: BlockItem) -> None:
+        """가장자리 드래그로 bbox가 바뀌면 줄도 그 자리에서 다시 계산한다."""
+        self._refresh_lines(item.block)
+        self._mark_dirty()
+
+    def _recompute_all_lines(self) -> None:
+        """도구 메뉴: 메모리에 올라온 모든 페이지의 줄 정보를 다시 계산한다.
+
+        이 기능이 생기기 전에 병합/새로 그린 블록은 줄 정보 없이 저장돼 있어서,
+        이미 보정을 끝낸 페이지들을 한 번에 고치려면 일괄 재계산이 필요하다.
+        페이지마다 렌더링+마스크로 ~1초가 걸려 진행창과 취소를 붙였다.
+        """
+        pages = sorted(p for p, entries in self.pages_blocks.items() if entries)
+        if not pages:
+            QMessageBox.information(self, "줄 정보 다시 계산", "분석된 페이지가 없습니다.")
+            return
+        progress = QProgressDialog(f"{len(pages)}개 페이지 줄 정보 재계산...", "취소", 0, len(pages), self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+
+        changed_blocks = 0
+        changed_pages = 0
+        for i, page_number in enumerate(pages):
+            if progress.wasCanceled():
+                break
+            progress.setValue(i)
+            progress.setLabelText(f"{page_number}쪽 ({i + 1}/{len(pages)})")
+            QApplication.processEvents()
+            img = segment.render_page(self.pdf_path, page_number - 1, 150)
+            h, w = img.shape[:2]
+            mask_lines = segment.compute_mask_lines(img)
+            mask_words = segment.compute_mask_words(img)
+            n = sum(
+                _refresh_block_lines(e["block"], mask_lines, mask_words, w, h)
+                for e in self.pages_blocks[page_number]
+            )
+            if n:
+                changed_pages += 1
+                changed_blocks += n
+        progress.setValue(len(pages))
+
+        if changed_blocks:
+            self._mark_dirty()
+            self._load_page(self.current_page)  # 미리보기/화면에 바로 반영
+        QMessageBox.information(
+            self,
+            "줄 정보 다시 계산",
+            f"{changed_pages}개 페이지 {changed_blocks}개 블록의 줄 정보가 바뀌었습니다."
+            + ("\n저장(S)해야 반영됩니다." if changed_blocks else ""),
+        )
 
     # ---------- 블록 연결 (지정 모드) ----------
 
@@ -1353,7 +1471,7 @@ class ReviewWindow(QMainWindow):
         """BlockItem을 만들고 콜백을 붙인다. 병합/새로 그린 블록도 반드시 이걸 거쳐야
         우클릭 '블록 연결'이 동작한다 (예전엔 on_dirty만 붙여서 새 블록은 메뉴가 먹통이었다)."""
         item = BlockItem(block, needs_review, self._page_w, self._page_h)
-        item.on_dirty = self._mark_dirty
+        item.on_dirty = self._on_block_resized
         item.on_request_attach = self._start_attach
         item.on_request_detach = self._detach_item
         return item
@@ -1431,6 +1549,9 @@ class ReviewWindow(QMainWindow):
             "order": len(entries),
             "reflow": {"role": pipeline.ROLE_BY_TYPE.get(biggest["type"], "paragraph")},
         }
+        # 합친 뒤의 bbox 기준으로 줄을 다시 잡는다 — 이게 없으면 여러 수식/문단을
+        # 합친 넓은 블록이 줄 정보 없이 통째로 축소돼 글자가 작아진다(35쪽 사례).
+        self._refresh_lines(new_block)
         entries.append({"block": new_block, "needs_review": False})
         self.scene.addItem(self._make_block_item(new_block, False))
         # 병합된 블록을 가리키던 연결은 병합 결과로 넘긴다 (죽은 id로 남지 않게)
@@ -1473,6 +1594,7 @@ class ReviewWindow(QMainWindow):
             "order": len(entries),
             "reflow": {"role": "paragraph"},
         }
+        self._refresh_lines(new_block)
         entries.append({"block": new_block, "needs_review": False})
         self.scene.addItem(self._make_block_item(new_block, False))
         self.add_action.setChecked(False)
