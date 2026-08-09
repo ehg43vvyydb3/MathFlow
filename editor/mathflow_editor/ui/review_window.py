@@ -106,9 +106,11 @@ def _reading_order_key(block: dict) -> tuple[int, int, int, int]:
     return (is_page_number, column, y_bucket, type_priority)
 
 
-# 위치 연결(attach)에서 "옮길 수 있는" 소스 블록 타입. problem_number는 문제 경계라
-# 제자리에 둔다. 대상(어디 뒤에 붙일지)은 자기 자신만 아니면 어떤 블록이든 된다.
-_ATTACH_SOURCE_TYPES = {"text", "figure", "formula", "table"}
+# 위치 연결(attach)은 소스·대상 모두 타입 제한이 없다 — 자기 자신만 아니면
+# 어떤 블록이든 옮길 수 있고 어떤 블록 뒤에도 붙일 수 있다. 예전엔 problem_number를
+# "문제 경계라 제자리에 둔다"는 이유로, page_number를 "항상 맨 끝"이라는 이유로
+# 소스에서 뺐지만, 번호가 자기 문제/내용과 어긋나 잡히는 페이지에서 손으로 고칠
+# 방법이 없어져서 제한을 없앴다.
 
 
 def _block_center(block: dict, page_w: int, page_h: int) -> tuple[float, float]:
@@ -121,11 +123,11 @@ def _attach_target(entry: dict) -> str | None:
 
 
 def _apply_attachments(entries: list[dict]) -> list[dict]:
-    """reflow.attach_to가 지정된 블록(주로 figure)을 대상 블록 바로 뒤로 옮긴다.
+    """reflow.attach_to가 지정된 블록을 대상 블록 바로 뒤로 옮긴다.
 
-    그림이 문제와 멀리 떨어져 위치 기준 정렬로는 엉뚱한 데 끼는 경우, 사용자가
-    편집기에서 대상 문제를 직접 지정해 그 뒤에 붙이게 하는 기능. 대상이 같은
-    페이지에 없으면(삭제됐거나 대상도 attach된 경우) 그림을 맨 뒤에 그대로 둔다.
+    그림·번호가 관련 내용과 멀리 떨어져 위치 기준 정렬로는 엉뚱한 데 끼는 경우,
+    사용자가 편집기에서 대상 블록을 직접 지정해 그 뒤에 붙이게 하는 기능. 대상이
+    같은 페이지에 없으면(삭제됐거나 순환 연결이면) 그 블록을 맨 뒤에 그대로 둔다.
     입력 entries는 이미 _reading_order_key로 정렬돼 있다고 가정한다.
     """
     if not any(_attach_target(e) for e in entries):
@@ -138,13 +140,21 @@ def _apply_attachments(entries: list[dict]) -> list[dict]:
             after.setdefault(tid, []).append(e)
     result: list[dict] = []
     placed: set[int] = set()
+
+    def place(entry: dict) -> None:
+        # 연결이 사슬로 이어질 수 있다(A→B, B→C: 그림을 문제번호에, 그 문제번호를
+        # 본문에 붙이는 식) — 대상을 놓을 때 거기 붙은 것들도 이어서 놓는다.
+        # placed 검사가 순환 연결(A→B, B→A)에서 무한 재귀를 막아준다.
+        result.append(entry)
+        placed.add(id(entry))
+        for a in after.get(entry["block"]["id"], []):
+            if id(a) not in placed:
+                place(a)
+
     for e in remaining:
-        result.append(e)
-        for a in after.get(e["block"]["id"], []):
-            result.append(a)
-            placed.add(id(a))
+        place(e)
     for e in entries:  # 대상을 못 찾은 attach 블록은 맨 뒤에 붙인다
-        if _attach_target(e) and id(e) not in placed:
+        if id(e) not in placed:
             result.append(e)
     return result
 
@@ -220,9 +230,7 @@ class BlockItem(QGraphicsRectItem):
         self.apply_style()
 
     def contextMenuEvent(self, event) -> None:
-        """옮길 수 있는 블록을 우클릭하면 '블록 연결'(지정 모드 진입)/'연결 해제' 메뉴."""
-        if self.block["type"] not in _ATTACH_SOURCE_TYPES:
-            return
+        """블록을 우클릭하면 '블록 연결'(지정 모드 진입)/'연결 해제' 메뉴. 타입 제한 없음."""
         menu = QMenu()
         act_attach = menu.addAction("블록 연결")
         act_detach = None
@@ -1277,9 +1285,9 @@ class ReviewWindow(QMainWindow):
 
     def _start_attach_selected(self) -> None:
         """툴바 '블록 연결': 선택된 소스 블록 하나로 지정 모드에 들어간다."""
-        srcs = [it for it in self._selected_items() if it.block["type"] in _ATTACH_SOURCE_TYPES]
+        srcs = self._selected_items()
         if len(srcs) != 1:
-            self.status_label.setText("블록 연결: 옮길 블록(figure/text/formula) 하나를 선택한 뒤 누르세요")
+            self.status_label.setText("블록 연결: 옮길 블록 하나를 선택한 뒤 누르세요")
             return
         self._start_attach(srcs[0])
 
