@@ -94,8 +94,8 @@ python editor/prototypes/diff_edits.py --pages 10-32 > report.txt
 # 서버: 코드 변경사항을 파이에 배포 (data/는 제외 — 그건 편집기가 따로 rsync함)
 rsync -avz --exclude data server/ pi:~/apps/mathflow-server/
 ssh pi "sudo systemctl restart mathflow-server"
-curl http://100.101.163.114:5020/                        # 헬스체크
-# 뷰어: http://pi.taildae7bd.ts.net:5020/viewer/ (Tailscale 필요, 공개 Funnel 없음)
+curl http://100.103.195.8:5020/                        # 헬스체크
+# 뷰어: http://raspberrypi.taildae7bd.ts.net:5020/viewer/ (Tailscale 필요, 공개 Funnel 없음)
 ```
 
 정식 pytest 스위트는 없다. 이 리포에서 검증은 이렇게 한다:

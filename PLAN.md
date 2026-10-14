@@ -116,12 +116,14 @@ server/            FastAPI 서버 소스 (파이의 ~/apps/mathflow-server 로 r
   client/          웹 뷰어 (index.html/app.js/style.css, 빌드 없음). 북마크·즐겨찾기·
                     최근 페이지는 localStorage — book_id로만 네임스페이스, 서버 동기화 없음
   mathflow-server.service   systemd 유닛 (파이에 설치됨, 상시 실행 + monitor 앱 등록)
+                    파이의 /etc/systemd/system 쪽은 복사본이 아니라 앱 폴더의 이 파일로 가는 심링크
+                    (`sudo systemctl enable --now <전체경로>`로 등록 — 비번 없는 sudo 범위 안에서 됨)
 ```
 
 편집기 실행: `editor/.venv` 활성화 후 `python -m mathflow_editor.ui.main`
 서버 배포(코드 변경 시): `rsync -avz --exclude data server/ pi:~/apps/mathflow-server/` 후
-`ssh pi "sudo systemctl restart mathflow-server"`. 헬스체크: `curl http://100.101.163.114:5020/`.
-뷰어 접속: `http://pi.taildae7bd.ts.net:5020/viewer/` (tailnet 연결 필요, Funnel 없음).
+`ssh pi "sudo systemctl restart mathflow-server"`. 헬스체크: `curl http://100.103.195.8:5020/`.
+뷰어 접속: `http://raspberrypi.taildae7bd.ts.net:5020/viewer/` (tailnet 연결 필요, Funnel 없음).
 파이는 Tailscale tailnet 안에서만 접근 가능(Funnel 없음) — 폰 브라우저는 tailnet 연결 상태에서 접속.
 
 ## 진행 상황
@@ -144,7 +146,7 @@ server/            FastAPI 서버 소스 (파이의 ~/apps/mathflow-server 로 r
       페이지 이동, 단원 이동, 북마크·즐겨찾기·최근 페이지(localStorage 원장 +
       서버 동기화로 기기 간 공유 — 아래 "기기 간 동기화" 항목), 좌우 화살표 키 페이지 이동.
       `/viewer` 경로로 서빙, Ⅰ-1 단원(10~32쪽) 전체 전송 완료.
-      접속: `http://pi.taildae7bd.ts.net:5020/viewer/` (tailnet 필요)
+      접속: `http://raspberrypi.taildae7bd.ts.net:5020/viewer/` (tailnet 필요)
 - [x] "Ⅰ-1. 평면좌표" 단원 전체 diff 재분석 → 아이콘 배지(필수/확인체크) 색상
       검출 반영 완료 (2026-07-11, 위 규칙 목록 참고)
 - [x] 웹 뷰어 문제 단위 표시: 리플로우에서 problem_number 블록 옆 토글, 탭할 때마다
